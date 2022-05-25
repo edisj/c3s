@@ -2,7 +2,7 @@ Chemical System Stochastic Simulator
 ==============================
 [//]: # (Badges)
 [![GitHub Actions Build Status](https://github.com/edisj/c3s/workflows/CI/badge.svg)](https://github.com/edisj/c3s/actions?query=workflow%3ACI)
-[![codecov](https://codecov.io/gh/edisj/Chemical System Stochastic Simulator/branch/master/graph/badge.svg)](https://codecov.io/gh/edisj/Chemical System Stochastic Simulator/branch/master)
+[![codecov](https://codecov.io/gh/edisj/TODO/branch/master/graph/badge.svg)](https://codecov.io/gh/edisj/TODO/branch/master)
 
 
 A tool for stochastically simulating chemcial systems
