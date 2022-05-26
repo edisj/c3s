@@ -4,10 +4,11 @@ import numpy as np
 from scipy.sparse import linalg
 from pathlib import Path
 from tqdm.autonotebook import tqdm
-from .utils import timeit
+from .utils import timeit, make_balanced_slices
+from mpi4py import MPI
 
 
-class Base:
+class BaseParallel:
     """Docstring TODO"""
 
     def __init__(self, cfg='reactions.cfg'):
@@ -22,6 +23,10 @@ class Base:
             Path to config file that defines all chemical reactions and rates.
 
         """
+
+        self.comm = MPI.COMM_WORLD
+        self.size = self.comm.Get_size()
+        self.rank = self.comm.Get_rank()
 
         self.cfg_location = cfg
         self._species = None
@@ -146,7 +151,7 @@ class Base:
         pass
 
 
-class MasterEquation(Base):
+class MasterEquationParallel(BaseParallel):
     """Docstring TODO"""
 
     def __init__(self, initial_species=None, cfg='reactions.cfg'):
@@ -161,7 +166,7 @@ class MasterEquation(Base):
 
         """
 
-        super(MasterEquation, self).__init__(cfg)
+        super(MasterEquationParallel, self).__init__(cfg)
         self.initial_state = None
         self.constitutive_states = None
         self.constitutive_states_strings = None
@@ -233,10 +238,21 @@ class MasterEquation(Base):
 
         N = len(self.constitutive_states)
 
-        generator_matrix_values = np.empty(shape=(N,N), dtype=np.int32)
-        #generator_matrix_strings = []
+        slices = make_balanced_slices(N, self.size, start=0, stop=N, step=1)
+        # give each rank unique start and stop points
+        start = slices[self.rank].start
+        stop = slices[self.rank].stop
+        bsize = stop - start
+        # sendcounts is used for Gatherv() to know how many elements are sent from each rank
+        sendcounts = N * np.array([slices[i].stop - slices[i].start for i in range(self.size)])
 
-        for i in range(N):
+        G_buffer = np.empty(shape=(N,N), dtype=np.int32)
+        G_local_block = np.empty(shape=(bsize, N), dtype=np.int32)
+        if self.rank == 0:
+            G_buffer = np.empty(shape=(N,N), dtype=np.int32)
+
+        # now each process has unique scanning range
+        for index, i in enumerate(range(start, stop)):
             #new_row = []
             state_i = self.constitutive_states[i]
             for j in range(N):
@@ -252,14 +268,14 @@ class MasterEquation(Base):
                 else:
                     #rate_string = '0'
                     rate_value = 0
-
                 #new_row.append(rate_string)
-                generator_matrix_values[i][j] = rate_value
+                G_local_block[index][j] = rate_value
 
-            #generator_matrix_strings.append(new_row)
-            generator_matrix_values[i][i] = -np.sum(generator_matrix_values[i])
+            G_local_block[index][i] = -np.sum(G_local_block[index])
 
-        self.generator_matrix = generator_matrix_values
+        self.comm.Gatherv(sendbuf=G_local_block, recvbuf=(G_buffer, sendcounts), root=0)
+        self.comm.Bcast(G_buffer, root=0)
+        self.generator_matrix = G_buffer
         #self.generator_matrix_strings = generator_matrix_strings
 
     def update_rates(self, new_rates):
@@ -318,7 +334,7 @@ class MasterEquation(Base):
             propagator = linalg.expm(Gdt)
 
         with timeit() as run_time:
-            for i in tqdm(range(n_steps - 1)):
+            for i in tqdm(range(n_steps - 1), leave=True, desc=f'running on process {self.rank}'):
                 P_t[i+1] = P_t[i].dot(propagator)
 
         self.timings['t_G_times_dt'] = G_times_dt.elapsed
@@ -328,10 +344,10 @@ class MasterEquation(Base):
         self.results = P_t
 
 
-class Gillespie(Base):
+class GillespieParallel(BaseParallel):
 
     def __init__(self):
-        super(Base, self).__init__()
+        super(GillespieParallel, self).__init__()
 
     def run(self):
         pass

@@ -1,14 +1,14 @@
 import pytest
 from numpy.testing import assert_almost_equal, assert_equal
 import numpy as np
-from ..simulators import MasterEquation
-from ..calculations import calc_mutual_information_old, calc_mutual_information_new
+from c3s.parallel_simulators import MasterEquationParallel
+from c3s.calculations import calc_mutual_information_old
 
-class TestSimulators:
+class TestParallelSimulators:
 
     @pytest.fixture(scope='class')
     def test_system(self):
-        system = MasterEquation(initial_species={'A': 2}, cfg='test_reactions.cfg')
+        system = MasterEquationParallel(initial_species={'A': 2}, cfg='test_reactions.cfg')
         start, stop, step = 0, 3, 0.001
         system.run(start, stop, step)
         yield system
@@ -40,6 +40,7 @@ class TestSimulators:
             [0, 1, 2, 6, -13, 4],
             [0, 0, 1, 0, 6, -7]]
 
+        print(test_system.generator_matrix)
         assert_equal(generator_matrix, test_system.generator_matrix)
 
     def test_changing_rates(self, test_system):
@@ -53,7 +54,7 @@ class TestSimulators:
         test_system.reset_rates()
         assert_equal(test_system.rates[0], rate_from_config)
 
-    def test_mutual_information_old(self, test_system):
+    def test_mutual_information(self, test_system):
 
         MI_1 = 0.02039576       # 1st timestep
         MI_500 = 1.04275917     # 500th timestep
@@ -62,21 +63,6 @@ class TestSimulators:
 
         A, B = ['A', 'A*'], ['B']
         MIs = calc_mutual_information_old(test_system, A, B)
-
-        assert_almost_equal(MI_1, MIs[1])
-        assert_almost_equal(MI_500, MIs[500])
-        assert_almost_equal(MI_1000, MIs[1000])
-        assert_almost_equal(MI_last, MIs[-1])
-
-    def test_mutual_information_new(self, test_system):
-
-        MI_1 = 0.02039576  # 1st timestep
-        MI_500 = 1.04275917  # 500th timestep
-        MI_1000 = 1.08477599  # 1000th timestep
-        MI_last = 1.09005295  # last timestep
-
-        A, B = ['A', 'A*'], ['B']
-        MIs = calc_mutual_information_new(test_system, A, B)
 
         assert_almost_equal(MI_1, MIs[1])
         assert_almost_equal(MI_500, MIs[500])
