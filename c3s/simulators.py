@@ -322,7 +322,7 @@ class MasterEquation(Base):
             propagator = linalg.expm(Gdt)
 
         with timeit() as run_time:
-            for i in ProgressBar(range(n_steps - 1)):
+            for i in ProgressBar(range(n_steps - 1), desc=f'running on rank {self.rank}'):
                 P_t[i+1] = P_t[i].dot(propagator)
 
         self.timings['t_G_times_dt'] = G_times_dt.elapsed
