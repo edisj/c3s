@@ -1,6 +1,6 @@
 import pandas as pd
 from c3s.simulators import MasterEquation
-from c3s.calculations import calc_mutual_information_new
+from c3s.calculations import calc_mutual_information_old
 import argparse
 from pathlib import Path
 
@@ -27,7 +27,7 @@ def benchmark():
             n_terms = len(system.results)
             X = ['A', 'A^*', 'AS', 'A^*S']
             Y = ['B', 'B^*']
-            calc_mutual_information_new(system, X, Y)
+            calc_mutual_information_old(system, X, Y)
 
             if columns is None:
                 columns = list(system.timings.keys())
@@ -37,7 +37,7 @@ def benchmark():
             results.append(times_for_this_iter)
 
     df = pd.DataFrame(results, columns=columns)
-    Path('results').mkdir(parents=True, exist_ok=True)
+    Path('serial/results').mkdir(parents=True, exist_ok=True)
     df.to_csv(f'results/{filename}.csv', index=False)
 
 

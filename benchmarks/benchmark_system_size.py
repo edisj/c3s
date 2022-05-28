@@ -38,7 +38,7 @@ def benchmark():
             results.append(times_for_this_iter)
 
     df = pd.DataFrame(results, columns=columns)
-    Path('results').mkdir(parents=True, exist_ok=True)
+    Path('serial/results').mkdir(parents=True, exist_ok=True)
     df.to_csv(f'results/{filename}.csv', index=False)
 
 
