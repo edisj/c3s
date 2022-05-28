@@ -2,7 +2,6 @@
 
 # Add imports here
 from .simulators import MasterEquation
-from .parallel_simulators import MasterEquationParallel
 
 # Handle versioneer
 from ._version import get_versions

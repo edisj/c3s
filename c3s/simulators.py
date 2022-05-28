@@ -1,16 +1,21 @@
-import yaml
-from yaml import CLoader
 import numpy as np
+import yaml
 from scipy.sparse import linalg
 from pathlib import Path
-from tqdm.autonotebook import tqdm
-from .utils import timeit
+from .utils import timeit, ProgressBar, slice_tasks_for_parallel_workers
+from typing import List, Dict
+try:
+    from mpi4py import MPI
+except ImportError:
+    MPI_ON = False
+else:
+    MPI_ON = True
 
 
 class Base:
     """Docstring TODO"""
 
-    def __init__(self, cfg='reactions.cfg'):
+    def __init__(self, cfg: str) -> None:
         """Base class for all simulators.
 
         Reads a config file that specifies the chemical reactions and kinetic rates
@@ -31,6 +36,7 @@ class Base:
         self._rate_strings = None
         self._reactants = None
         self._products = None
+        # dictionary to hold timings of various codeblocks for benchmarking
         self.timings = {}
 
         self._unprocessed_data = self._load_data_from_yaml()
@@ -49,17 +55,17 @@ class Base:
         self.timings['t_set_reaction_matrix'] = set_reaction_matrix.elapsed
         self.timings['t_set_rates'] = set_rates.elapsed
 
-    def _load_data_from_yaml(self):
-        """Reads the config file and stores the key:value pairs in the self._data dictionary."""
+    def _load_data_from_yaml(self) -> Dict:
+        """Reads the config file and stores the key:value pairs in the self._unprocessed_data dictionary."""
 
-        data = {}
+        unprocessed_data = {}
         config_file = Path.cwd() / self.cfg_location
         with open(config_file) as file:
-            data.update(yaml.load(file, Loader=CLoader))
+            unprocessed_data.update(yaml.load(file, Loader=yaml.CLoader))
 
-        return data
+        return unprocessed_data
 
-    def _process_data_from_config(self):
+    def _process_data_from_config(self) -> None:
         """Reads the data from config file to get reactants, products, and rates."""
 
         reactions = [list(reaction.keys())[0] for reaction in self._unprocessed_data['reactions']]
@@ -73,7 +79,7 @@ class Base:
         self._products = products
         self._rates_from_config = self._unprocessed_data['rates'].copy()
 
-    def _set_species_vector(self):
+    def _set_species_vector(self) -> None:
         """Constructs vector of strings that specify the set of unique molecular species in the system."""
 
         reactants = self._reactants
@@ -93,7 +99,7 @@ class Base:
 
         self._species = all_species
 
-    def _set_reaction_matrix(self):
+    def _set_reaction_matrix(self) -> None:
         """Constructs the stochiometric reaction matrix."""
 
         reactants = self._reactants
@@ -113,7 +119,7 @@ class Base:
 
         self._reaction_matrix = reaction_matrix
 
-    def _set_rates(self):
+    def _set_rates(self) -> None:
         """Constructs vector of kinetic rates."""
 
         rates_dictionary = self._rates_from_config
@@ -127,37 +133,37 @@ class Base:
         self._rate_strings = rate_strings
 
     @property
-    def species(self):
+    def species(self) -> List[str]:
         return self._species
 
     @property
-    def reaction_matrix(self):
+    def reaction_matrix(self) -> np.ndarray:
         return self._reaction_matrix
 
     @property
-    def rates(self):
+    def rates(self) -> np.ndarray:
         return self._rates
 
     @property
-    def rate_strings(self):
+    def rate_strings(self) -> List[str]:
         return self._rate_strings
 
-    def run(self):
+    def run(self) -> None:
+        """Runs the simulator of the child Class."""
         pass
 
 
 class MasterEquation(Base):
     """Docstring TODO"""
 
-    def __init__(self, initial_species=None, cfg='reactions.cfg'):
+    def __init__(self, cfg: str, initial_species: Dict = None) -> None:
         """Docstring TODO.
 
         Parameters
         ----------
         initial_species : dict
-            Set whether or not to display who the quote is from.
         cfg : str
-            Path to config file.
+            Path to config file that specifies chemical reactions and kinetic rates.
 
         """
 
@@ -166,23 +172,28 @@ class MasterEquation(Base):
         self.constitutive_states = None
         self.constitutive_states_strings = None
         self.generator_matrix= None
-        self.generator_matrix_strings = None
         self.results = None
-
         self._initial_species = initial_species
+        # MPI communicator
+        self.comm = MPI.COMM_WORLD if MPI_ON else None
+        # unique process id
+        self.rank = self.comm.Get_rank() if MPI_ON else None
+        # total number of processes available
+        self.size = self.comm.Get_size() if MPI_ON else None
+
         if initial_species is not None:
             with timeit() as set_initial_states:
                 self._set_initial_state()
             with timeit() as set_constitutive_states:
                 self._set_constitutive_states()
             with timeit() as set_generator_matrix:
-                self._set_generator_matrices()
+                self._set_generator_matrix()
 
             self.timings['t_set_initial_states'] = set_initial_states.elapsed
             self.timings['t_set_constitutive_states'] = set_constitutive_states.elapsed
             self.timings['t_set_generator_matrix'] = set_generator_matrix.elapsed
 
-    def _set_initial_state(self):
+    def _set_initial_state(self) -> None:
         """Sets the initial state vector."""
 
         initial_state = np.zeros(shape=(len(self.species)), dtype=np.int32)
@@ -228,78 +239,71 @@ class MasterEquation(Base):
         self.constitutive_states = constitutive_states
         self.constitutive_states_strings =  constitutive_states_strings
 
-    def _set_generator_matrices(self):
+    def _set_generator_matrix(self) -> None:
         """Constructs the generator matrix."""
 
-        N = len(self.constitutive_states)
+        n_states = len(self.constitutive_states)
 
-        generator_matrix_values = np.empty(shape=(N,N), dtype=np.int32)
-        #generator_matrix_strings = []
+        if MPI_ON:
+            slices = slice_tasks_for_parallel_workers(n_tasks = n_states, n_workers = self.size)
+            # sendcounts is used for comm.Gatherv() to know how many elements are sent from each process
+            sendcounts = n_states * np.array([slices[i].stop - slices[i].start for i in range(self.size)])
+            # use unique process ids as index
+            start = slices[self.rank].start
+            stop = slices[self.rank].stop
+            local_blocksize = stop - start
+            # global buffer that all processes will combine their data into
+            generator_matrix_global = np.empty(shape=(n_states, n_states), dtype=np.int32)
+            # local buffer that only this process sees
+            generator_matrix_local = np.zeros(shape=(local_blocksize, n_states), dtype=np.int32)
 
-        for i in range(N):
-            #new_row = []
+        else:
+            start = 0
+            stop = n_states
+            generator_matrix_local = generator_matrix_global = np.zeros(shape=(n_states, n_states), dtype=np.int32)
+
+        for local_i, i in enumerate(range(start, stop)):
             state_i = self.constitutive_states[i]
-            for j in range(N):
-                state_j = self.constitutive_states[j]
+            for j in range(n_states):
                 if i == j:
-                    #rate_string = '-'
-                    rate_value = 0
+                    continue
+                state_j = self.constitutive_states[j]
                 for k, reaction in enumerate(self.reaction_matrix):
                     if list(state_i + reaction) == state_j:
-                        #rate_string = self.rate_strings[k]
-                        rate_value = self.rates[k]
+                        rate = self.rates[k]
                         break
                 else:
-                    #rate_string = '0'
-                    rate_value = 0
+                    rate = 0
+                generator_matrix_local[local_i][j] = rate
 
-                #new_row.append(rate_string)
-                generator_matrix_values[i][j] = rate_value
+            # fix diagonal elements after completing the row
+            generator_matrix_local[local_i][i] = -np.sum(generator_matrix_local[local_i])
 
-            #generator_matrix_strings.append(new_row)
-            generator_matrix_values[i][i] = -np.sum(generator_matrix_values[i])
+        if MPI_ON:
+            self.comm.Gatherv(sendbuf=generator_matrix_local, recvbuf=(generator_matrix_global, sendcounts), root=0)
+            self.comm.Bcast(generator_matrix_global, root=0)
 
-        self.generator_matrix = generator_matrix_values
-        #self.generator_matrix_strings = generator_matrix_strings
+        self.generator_matrix = generator_matrix_global
 
-    def update_rates(self, new_rates):
-        """Updates rates.
-
-        Parameters
-        ----------
-        new_rates : dict
-            Set whether or not to display who the quote is from.
-
-        """
+    def update_rates(self, new_rates: Dict[str, float]) -> None:
+        """Updates rates."""
 
         for key, value in new_rates.items():
             self._rates_from_config[key] = value
         self._set_rates()
-        self._set_generator_matrices()
+        self._set_generator_matrix()
 
-    def reset_rates(self):
+    def reset_rates(self) -> None:
         """Resets rates to values from the config file."""
 
         self._rates_from_config = self._unprocessed_data['rates']
         self._set_rates()
-        self._set_generator_matrices()
+        self._set_generator_matrix()
 
-    def run(self, start=None, stop=None, step=None):
-        """Run.
+    def run(self, initial_time: float = None, final_time: float = None, dt: float = None) -> None:
+        """Run."""
 
-        Parameters
-        ----------
-        start :
-            Set whether or not to display who the quote is from.
-        stop :
-            Set whether or not to display who the quote is from.
-        step :
-            Set whether or not to display who the quote is from.
-
-        """
-
-        n_steps = int((stop-start) / step)
-        dt = step
+        n_steps = int((final_time - initial_time) / dt)
 
         N = len(self.constitutive_states)
         P_0 = np.zeros(shape=N)
@@ -318,7 +322,7 @@ class MasterEquation(Base):
             propagator = linalg.expm(Gdt)
 
         with timeit() as run_time:
-            for i in tqdm(range(n_steps - 1)):
+            for i in ProgressBar(range(n_steps - 1)):
                 P_t[i+1] = P_t[i].dot(propagator)
 
         self.timings['t_G_times_dt'] = G_times_dt.elapsed

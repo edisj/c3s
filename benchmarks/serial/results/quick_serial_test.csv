@@ -1,0 +1,2 @@
+repeat,n_states,t_process_data_from_config,t_set_species_vector,t_set_reaction_matrix,t_set_rates,t_set_initial_states,t_set_constitutive_states,t_set_generator_matrix,t_G_times_dt,t_matrix_exponential,t_run,t_calculate_mutual_information
+0,122,1.71661376953125e-05,6.67572021484375e-06,3.6716461181640625e-05,8.821487426757812e-06,6.580352783203125e-05,0.016420364379882812,0.34972357749938965,4.863739013671875e-05,0.009571552276611328,0.006519794464111328,3.0638225078582764

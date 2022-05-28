@@ -4,14 +4,14 @@ import numpy as np
 from scipy.sparse import linalg
 from pathlib import Path
 from tqdm.autonotebook import tqdm
-from .utils import timeit, make_balanced_slices
+from .utils import timeit, slice_tasks_for_parallel_workers
 from mpi4py import MPI
 
 
 class BaseParallel:
     """Docstring TODO"""
 
-    def __init__(self, cfg='reactions.cfg'):
+    def __init__(self, cfg: str = 'reactions.cfg'):
         """Base class for all simulators.
 
         Reads a config file that specifies the chemical reactions and kinetic rates
@@ -160,7 +160,7 @@ class MasterEquationParallel(BaseParallel):
         Parameters
         ----------
         initial_species : dict
-            Set whether or not to display who the quote is from.
+
         cfg : str
             Path to config file.
 
@@ -246,10 +246,8 @@ class MasterEquationParallel(BaseParallel):
         # sendcounts is used for Gatherv() to know how many elements are sent from each rank
         sendcounts = N * np.array([slices[i].stop - slices[i].start for i in range(self.size)])
 
-        G_buffer = np.empty(shape=(N,N), dtype=np.int32)
-        G_local_block = np.empty(shape=(bsize, N), dtype=np.int32)
-        if self.rank == 0:
-            G_buffer = np.empty(shape=(N,N), dtype=np.int32)
+        G_global_buffer = np.empty(shape=(N,N), dtype=np.int32)
+        G_local_buffer = np.empty(shape=(bsize, N), dtype=np.int32)
 
         # now each process has unique scanning range
         for index, i in enumerate(range(start, stop)):
@@ -269,22 +267,22 @@ class MasterEquationParallel(BaseParallel):
                     #rate_string = '0'
                     rate_value = 0
                 #new_row.append(rate_string)
-                G_local_block[index][j] = rate_value
+                G_local_buffer[index][j] = rate_value
 
-            G_local_block[index][i] = -np.sum(G_local_block[index])
+            G_local_buffer[index][i] = -np.sum(G_local_buffer[index])
 
-        self.comm.Gatherv(sendbuf=G_local_block, recvbuf=(G_buffer, sendcounts), root=0)
-        self.comm.Bcast(G_buffer, root=0)
-        self.generator_matrix = G_buffer
+        self.comm.Gatherv(sendbuf=G_local_buffer, recvbuf=(G_global_buffer, sendcounts), root=0)
+        self.comm.Bcast(G_global_buffer, root=0)
+        self.generator_matrix = G_global_buffer
         #self.generator_matrix_strings = generator_matrix_strings
 
-    def update_rates(self, new_rates):
+    def update_rates(self, new_rates: dict):
         """Updates rates.
 
         Parameters
         ----------
         new_rates : dict
-            Set whether or not to display who the quote is from.
+
 
         """
 
