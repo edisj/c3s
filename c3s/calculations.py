@@ -2,6 +2,8 @@ import numpy as np
 from .simulators import MasterEquation, MPI_ON
 from .utils import timeit, ProgressBar, slice_tasks_for_parallel_workers
 from typing import List, Dict, Union
+if MPI_ON:
+    from mpi4py import MPI
 
 
 def calc_mutual_information(system: MasterEquation,
@@ -19,16 +21,17 @@ def calc_mutual_information(system: MasterEquation,
         y_map = _get_point_mappings(system, Y)
         xy_map = _get_point_mappings(system, X + Y)
 
-    if MPI_ON:
+    if system.parallel:
         slices = slice_tasks_for_parallel_workers(n_tasks=n_timesteps, n_workers=system.size)
-        sendcounts = n_timesteps * np.array([slices[i].stop - slices[i].start for i in range(system.size)])
+        sendcounts = tuple(slices[i].stop - slices[i].start for i in range(system.size))
+        displacements = tuple(slice_.start for slice_ in slices)
         start = slices[system.rank].start
         stop = slices[system.rank].stop
         local_blocksize = stop - start
-        # global buffer that all processes will combine their data into
-        mutual_information_global = np.empty(shape=n_timesteps, dtype=float)
         # local buffer that only this process sees
         mutual_information_local = np.empty(shape=local_blocksize, dtype=float)
+        # buffer that each process will fill in by receiving data from every other process
+        mutual_information_global = np.empty(shape=n_timesteps, dtype=float)
     else:
         start = 0
         stop = n_timesteps
@@ -36,8 +39,8 @@ def calc_mutual_information(system: MasterEquation,
         mutual_information_local = mutual_information_global = np.empty(shape=local_blocksize, dtype=float)
 
     with timeit() as calculation_block:
-        for i, ts in enumerate(ProgressBar(range(start,stop),
-                                           desc=f'rank {system.rank} calculating mutual information')):
+        for i, ts in enumerate(ProgressBar(range(start,stop), position=system.rank,
+                                           desc=f'rank {system.rank} calculating mutual information.')):
             probability_vector = system.results[ts]
             # initialize the sum to 0
             mutual_information = 0
@@ -65,10 +68,9 @@ def calc_mutual_information(system: MasterEquation,
 
             mutual_information_local[i] = mutual_information
 
-        if MPI_ON:
-            system.comm.Gatherv(sendbuf=mutual_information_local,
-                                recvbuf=(mutual_information_global, sendcounts),
-                                root=0)
+        if system.parallel:
+            system.comm.Allgatherv(sendbuf=mutual_information_local,
+                                   recvbuf=(mutual_information_global, sendcounts, displacements, MPI.DOUBLE))
 
     system.timings['t_get_point_mappings'] = get_point_mappings_block.elapsed
     system.timings['t_calculate_mutual_information'] = calculation_block.elapsed

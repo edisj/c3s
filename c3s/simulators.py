@@ -37,7 +37,7 @@ class Base:
         self._reactants = None
         self._products = None
         # dictionary to hold timings of various codeblocks for benchmarking
-        self.timings = {}
+        self.timings: Dict[str, float] = {}
 
         self._unprocessed_data = self._load_data_from_yaml()
 
@@ -180,6 +180,7 @@ class MasterEquation(Base):
         self.rank = self.comm.Get_rank() if MPI_ON else None
         # total number of processes available
         self.size = self.comm.Get_size() if MPI_ON else None
+        self.parallel = MPI_ON and self.size > 1
 
         if initial_species is not None:
             with timeit() as set_initial_states:
@@ -244,44 +245,40 @@ class MasterEquation(Base):
 
         n_states = len(self.constitutive_states)
 
-        if MPI_ON:
+        if self.parallel:
             slices = slice_tasks_for_parallel_workers(n_tasks = n_states, n_workers = self.size)
-            # sendcounts is used for comm.Gatherv() to know how many elements are sent from each process
-            sendcounts = n_states * np.array([slices[i].stop - slices[i].start for i in range(self.size)])
-            # use unique process ids as index
+            # sendcounts tells comm.Allgatherv() how many elements are sent from each process
+            sendcounts = tuple(n_states*(slices[i].stop - slices[i].start) for i in range(self.size))
+            # displacements tells comm.Allgatherv() the start index in the global array of each process' data
+            displacements = tuple(n_states*boundary.start for boundary in slices)
             start = slices[self.rank].start
             stop = slices[self.rank].stop
             local_blocksize = stop - start
-            # global buffer that all processes will combine their data into
-            generator_matrix_global = np.empty(shape=(n_states, n_states), dtype=np.int32)
             # local buffer that only this process sees
             generator_matrix_local = np.zeros(shape=(local_blocksize, n_states), dtype=np.int32)
-
+            # buffer that each process will fill in by receiving data from every other process
+            generator_matrix_global = np.empty(shape=(n_states, n_states), dtype=np.int32)
         else:
             start = 0
             stop = n_states
             generator_matrix_local = generator_matrix_global = np.zeros(shape=(n_states, n_states), dtype=np.int32)
 
-        for local_i, i in enumerate(range(start, stop)):
+        for local_i, i in enumerate(ProgressBar(range(start, stop), position=self.rank,
+                                                desc=f'rank {self.rank} working on generator matrix.')):
             state_i = self.constitutive_states[i]
             for j in range(n_states):
-                if i == j:
-                    continue
                 state_j = self.constitutive_states[j]
-                for k, reaction in enumerate(self.reaction_matrix):
-                    if list(state_i + reaction) == state_j:
-                        rate = self.rates[k]
-                        break
-                else:
-                    rate = 0
-                generator_matrix_local[local_i][j] = rate
-
+                if i != j:
+                    for k, reaction in enumerate(self.reaction_matrix):
+                        if list(state_i + reaction) == state_j:
+                            generator_matrix_local[local_i][j]  = self.rates[k]
+                            break
             # fix diagonal elements after completing the row
             generator_matrix_local[local_i][i] = -np.sum(generator_matrix_local[local_i])
 
-        if MPI_ON:
-            self.comm.Gatherv(sendbuf=generator_matrix_local, recvbuf=(generator_matrix_global, sendcounts), root=0)
-            self.comm.Bcast(generator_matrix_global, root=0)
+        if self.parallel:
+            self.comm.Allgatherv(sendbuf=generator_matrix_local,
+                                 recvbuf=(generator_matrix_global, sendcounts, displacements, MPI.INT))
 
         self.generator_matrix = generator_matrix_global
 
@@ -300,36 +297,60 @@ class MasterEquation(Base):
         self._set_rates()
         self._set_generator_matrix()
 
-    def run(self, initial_time: float = None, final_time: float = None, dt: float = None) -> None:
+    def run(self, initial_time: float = None, final_time: float = None, dt: float = None, ONE_PROC=False) -> None:
         """Run."""
 
-        n_steps = int((final_time - initial_time) / dt)
+        # using np.round to avoid floating point precision errors
+        n_timesteps = int(np.round((final_time - initial_time) / dt))
+        n_states = len(self.constitutive_states)
+        probability_vectors = np.empty(shape=(n_timesteps, n_states))
 
-        N = len(self.constitutive_states)
-        P_0 = np.zeros(shape=N)
-        P_t = np.empty(shape=(n_steps,N))
+        if ONE_PROC:
+            # only 1 process does this
+            if not self.parallel or self.rank == 0:
+                initial_probability_vector = np.zeros(shape=n_states)
+                # set the initial probability vector to have probability 1 at the initial state
+                for i, state in enumerate(self.constitutive_states):
+                    if np.array_equal(state, self.initial_state):
+                        initial_probability_vector[i] = 1
+                        break
+                probability_vectors[0] = initial_probability_vector
 
-        for i, state in enumerate(self.constitutive_states):
-            if np.array_equal(state, self.initial_state):
-                P_0[i] = 1
-                break
+                with timeit() as matrix_exponential:
+                    # propagator matrix
+                    Q = linalg.expm(self.generator_matrix*dt)
+                with timeit() as run_time:
+                    for ts in ProgressBar(range(n_timesteps - 1), desc=f'rank {self.rank} running.'):
+                        probability_vectors[ts+1] = probability_vectors[ts].dot(Q)
 
-        P_t[0] = P_0
+                self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
+                self.timings['t_run'] = run_time.elapsed
+            else:
+                self.timings['t_matrix_exponential'] = 0.0
+                self.timings['t_run'] = 0.0
+        else:
+            initial_probability_vector = np.zeros(shape=n_states)
+            # set the initial probability vector to have probability 1 at the initial state
+            for i, state in enumerate(self.constitutive_states):
+                if np.array_equal(state, self.initial_state):
+                    initial_probability_vector[i] = 1
+                    break
+            probability_vectors[0] = initial_probability_vector
 
-        with timeit() as G_times_dt:
-            Gdt = self.generator_matrix * dt
-        with timeit() as matrix_exponential:
-            propagator = linalg.expm(Gdt)
+            with timeit() as matrix_exponential:
+                # propagator matrix
+                Q = linalg.expm(self.generator_matrix * dt)
+            with timeit() as run_time:
+                for ts in ProgressBar(range(n_timesteps - 1), desc=f'rank {self.rank} running.'):
+                    probability_vectors[ts + 1] = probability_vectors[ts].dot(Q)
 
-        with timeit() as run_time:
-            for i in ProgressBar(range(n_steps - 1), desc=f'running on rank {self.rank}'):
-                P_t[i+1] = P_t[i].dot(propagator)
+            self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
+            self.timings['t_run'] = run_time.elapsed
 
-        self.timings['t_G_times_dt'] = G_times_dt.elapsed
-        self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
-        self.timings['t_run'] = run_time.elapsed
+        if self.parallel:
+            self.comm.Bcast(probability_vectors, root=0)
 
-        self.results = P_t
+        self.results = probability_vectors
 
 
 class Gillespie(Base):

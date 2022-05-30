@@ -6,7 +6,7 @@ import pytest
 from numpy.testing import assert_almost_equal, assert_equal
 import numpy as np
 import c3s
-from ..calculations import _calc_mutual_information_OLD_VERSION, calc_mutual_information
+from c3s.calculations import _calc_mutual_information_OLD_VERSION, calc_mutual_information
 
 
 def test_c3s_imported():
@@ -19,6 +19,7 @@ class TestSimulators:
     @pytest.fixture(scope='class')
     def test_system(self):
         system = c3s.simulators.MasterEquation(initial_species={'A': 2}, cfg='config_for_tests.cfg')
+        print(f'rank {system.rank}')
         start, stop, step = 0, 3, 0.001
         system.run(initial_time=start, final_time=stop, dt=step)
         yield system
@@ -90,6 +91,13 @@ class TestSimulators:
         MI_last = 1.09005295  # last timestep
 
         A, B = ['A', 'A*'], ['B']
+        #matrix = test_system.generator_matrix
+        #print(f'{test_system.size}, {test_system.parallel}')
+        if test_system.rank == 0:
+            print(f'rank {test_system.rank} has\n',
+                  f'{test_system.constitutive_states}\n',
+                  f'{test_system.generator_matrix}')
+
         MIs = calc_mutual_information(test_system, A, B)
 
         assert_almost_equal(MI_1, MIs[1])

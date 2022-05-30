@@ -40,10 +40,6 @@ def slice_tasks_for_parallel_workers(n_tasks: int, n_workers: int) -> List[slice
     ids = np.cumsum(np.concatenate(([0], blocksizes)))
     # use block boundaries as indices for slices
     slices = [slice(start, stop, 1) for start, stop in zip(ids[:-1], ids[1:])]
-    # fixes the last block's stop index in cases where it equals n_tasks
-    #last = slices[-1]
-    #last_stop = min(last.stop, n_tasks-1)
-    #slices[-1] = slice(last.start, last_stop, last.step)
 
     return slices
 
@@ -52,6 +48,4 @@ class ProgressBar(tqdm):
 
     def __init__(self, *args, **kwargs):
         """"""
-        super(ProgressBar, self).__init__(leave=False, dynamic_ncols=True,
-                                          bar_format='{desc}:{percentage:3.0f}%|{bar}[{elapsed}]',
-                                          *args, **kwargs)
+        super(ProgressBar, self).__init__(leave=False, dynamic_ncols=False, *args, **kwargs)
