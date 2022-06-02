@@ -18,7 +18,7 @@ To install the latest development version from source, run
 ```
 git clone git@github.com:edisj/c3s.git
 cd c3s
-python setup.py install
+pip install -e .
 ```
 
 
