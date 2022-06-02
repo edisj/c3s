@@ -173,6 +173,7 @@ class MasterEquation(Base):
         self.constitutive_states_strings = None
         self.generator_matrix= None
         self.results = None
+        self.dt = None
         self._initial_species = initial_species
         # MPI communicator
         self.comm = MPI.COMM_WORLD if MPI_ON else None
@@ -297,38 +298,17 @@ class MasterEquation(Base):
         self._set_rates()
         self._set_generator_matrix()
 
-    def run(self, initial_time: float = None, final_time: float = None, dt: float = None, ONE_PROC=False) -> None:
+    def run(self, start: float = None, stop: float = None, step: float = None) -> None:
         """Run."""
 
+        self.dt = step
         # using np.round to avoid floating point precision errors
-        n_timesteps = int(np.round((final_time - initial_time) / dt))
+        n_timesteps = int(np.round((stop - start) / self.dt))
         n_states = len(self.constitutive_states)
         probability_vectors = np.empty(shape=(n_timesteps, n_states))
 
-        if ONE_PROC:
-            # only 1 process does this
-            if not self.parallel or self.rank == 0:
-                initial_probability_vector = np.zeros(shape=n_states)
-                # set the initial probability vector to have probability 1 at the initial state
-                for i, state in enumerate(self.constitutive_states):
-                    if np.array_equal(state, self.initial_state):
-                        initial_probability_vector[i] = 1
-                        break
-                probability_vectors[0] = initial_probability_vector
-
-                with timeit() as matrix_exponential:
-                    # propagator matrix
-                    Q = linalg.expm(self.generator_matrix*dt)
-                with timeit() as run_time:
-                    for ts in ProgressBar(range(n_timesteps - 1), desc=f'rank {self.rank} running.'):
-                        probability_vectors[ts+1] = probability_vectors[ts].dot(Q)
-
-                self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
-                self.timings['t_run'] = run_time.elapsed
-            else:
-                self.timings['t_matrix_exponential'] = 0.0
-                self.timings['t_run'] = 0.0
-        else:
+        # only 1 process does this
+        if not self.parallel or self.rank == 0:
             initial_probability_vector = np.zeros(shape=n_states)
             # set the initial probability vector to have probability 1 at the initial state
             for i, state in enumerate(self.constitutive_states):
@@ -339,13 +319,16 @@ class MasterEquation(Base):
 
             with timeit() as matrix_exponential:
                 # propagator matrix
-                Q = linalg.expm(self.generator_matrix * dt)
+                Q = linalg.expm(self.generator_matrix*self.dt)
             with timeit() as run_time:
                 for ts in ProgressBar(range(n_timesteps - 1), desc=f'rank {self.rank} running.'):
-                    probability_vectors[ts + 1] = probability_vectors[ts].dot(Q)
+                    probability_vectors[ts+1] = probability_vectors[ts].dot(Q)
 
             self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
             self.timings['t_run'] = run_time.elapsed
+        else:
+            self.timings['t_matrix_exponential'] = 0.0
+            self.timings['t_run'] = 0.0
 
         if self.parallel:
             self.comm.Bcast(probability_vectors, root=0)

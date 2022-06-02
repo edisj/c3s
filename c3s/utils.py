@@ -23,13 +23,7 @@ class timeit(object):
 
 def slice_tasks_for_parallel_workers(n_tasks: int, n_workers: int) -> List[slice]:
     """Makes approximately even sized slices for some set of parallel workers
-    to use as indices for their local block of work.
-
-    Note
-    ----
-    If `mpi4py` is not installed and the
-
-    """
+    to use as indices for their local block of work."""
 
     # begin by making evenly sized block with the remainder truncated
     blocksizes = np.ones(n_workers, dtype=np.int64) * n_tasks // n_workers
