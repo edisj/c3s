@@ -3,6 +3,8 @@ import yaml
 from scipy.sparse import linalg
 from pathlib import Path
 from .utils import timeit, ProgressBar, slice_tasks_for_parallel_workers
+from .calculations import CalculationsMixin
+from .plotting import PlottingMixin
 from typing import List, Dict
 try:
     from mpi4py import MPI
@@ -12,10 +14,10 @@ else:
     MPI_ON = True
 
 
-class Base:
+class SimulatorBase:
     """Docstring TODO"""
 
-    def __init__(self, cfg: str) -> None:
+    def __init__(self, cfg: Path = None) -> None:
         """Base class for all simulators.
 
         Reads a config file that specifies the chemical reactions and kinetic rates
@@ -28,39 +30,29 @@ class Base:
 
         """
 
-        self.cfg_location = cfg
+        self._cfg = cfg
+        self._reactants = None
+        self._products = None
         self._species = None
         self._reaction_matrix = None
         self._rates_from_config = None
         self._rates = None
         self._rate_strings = None
-        self._reactants = None
-        self._products = None
         # dictionary to hold timings of various codeblocks for benchmarking
         self.timings: Dict[str, float] = {}
 
-        self._unprocessed_data = self._load_data_from_yaml()
-
-        with timeit() as process_data_from_config:
+        if self._cfg:
+            self._unprocessed_cfg_data = self._load_data_from_yaml()
             self._process_data_from_config()
-        with timeit() as set_species:
             self._set_species_vector()
-        with timeit() as set_reaction_matrix:
             self._set_reaction_matrix()
-        with timeit() as set_rates:
             self._set_rates()
-
-        self.timings['t_process_data_from_config'] = process_data_from_config.elapsed
-        self.timings['t_set_species_vector'] = set_species.elapsed
-        self.timings['t_set_reaction_matrix'] = set_reaction_matrix.elapsed
-        self.timings['t_set_rates'] = set_rates.elapsed
 
     def _load_data_from_yaml(self) -> Dict:
         """Reads the config file and stores the key:value pairs in the self._unprocessed_data dictionary."""
 
         unprocessed_data = {}
-        config_file = Path.cwd() / self.cfg_location
-        with open(config_file) as file:
+        with open(self._cfg) as file:
             unprocessed_data.update(yaml.load(file, Loader=yaml.CLoader))
 
         return unprocessed_data
@@ -68,7 +60,7 @@ class Base:
     def _process_data_from_config(self) -> None:
         """Reads the data from config file to get reactants, products, and rates."""
 
-        reactions = [list(reaction.keys())[0] for reaction in self._unprocessed_data['reactions']]
+        reactions = [list(reaction.keys())[0] for reaction in self._unprocessed_cfg_data['reactions']]
         reactions = [reaction.replace(' ', '') for reaction in reactions]
         reactants = [reaction.split("->")[0] for reaction in reactions]
         reactants = [reactant.split('+') for reactant in reactants]
@@ -77,7 +69,7 @@ class Base:
 
         self._reactants = reactants
         self._products = products
-        self._rates_from_config = self._unprocessed_data['rates'].copy()
+        self._rates_from_config = self._unprocessed_cfg_data['rates'].copy()
 
     def _set_species_vector(self) -> None:
         """Constructs vector of strings that specify the set of unique molecular species in the system."""
@@ -105,7 +97,7 @@ class Base:
         reactants = self._reactants
         products = self._products
 
-        n_reactions = len([list(reaction.keys())[0] for reaction in self._unprocessed_data['reactions']])
+        n_reactions = len([list(reaction.keys())[0] for reaction in self._unprocessed_cfg_data['reactions']])
         n_species = len(self.species)
 
         reaction_matrix = np.zeros(shape=(n_reactions,n_species), dtype=int)
@@ -123,7 +115,7 @@ class Base:
         """Constructs vector of kinetic rates."""
 
         rates_dictionary = self._rates_from_config
-        rate_strings = [list(reaction.values())[0] for reaction in self._unprocessed_data['reactions']]
+        rate_strings = [list(reaction.values())[0] for reaction in self._unprocessed_cfg_data['reactions']]
         rate_values = np.empty(shape=len(rate_strings))
 
         for i, rate in enumerate(rate_strings):
@@ -132,31 +124,40 @@ class Base:
         self._rates = rate_values
         self._rate_strings = rate_strings
 
-    @property
-    def species(self) -> List[str]:
-        return self._species
-
-    @property
-    def reaction_matrix(self) -> np.ndarray:
-        return self._reaction_matrix
-
-    @property
-    def rates(self) -> np.ndarray:
-        return self._rates
-
-    @property
-    def rate_strings(self) -> List[str]:
-        return self._rate_strings
-
     def run(self) -> None:
         """Runs the simulator of the child Class."""
         pass
 
+    @property
+    def species(self) -> List[str]:
+        return self._species
+    @species.setter
+    def species(self, value):
+        self._species = value
+    @property
+    def reaction_matrix(self) -> np.ndarray:
+        return self._reaction_matrix
+    @reaction_matrix.setter
+    def reaction_matrix(self, value):
+        self._reaction_matrix = value
+    @property
+    def rates(self) -> np.ndarray:
+        return self._rates
+    @rates.setter
+    def rates(self, value):
+        self._rates = value
+    @property
+    def rate_strings(self):
+        return self._rate_strings
 
-class MasterEquation(Base):
+
+class MasterEquation(SimulatorBase, CalculationsMixin, PlottingMixin):
     """Docstring TODO"""
 
-    def __init__(self, cfg: str, initial_species: Dict = None) -> None:
+    def __init__(self,
+                 cfg: str = None,
+                 initial_species: Dict = None,
+                 empty: bool = False) -> None:
         """Docstring TODO.
 
         Parameters
@@ -168,13 +169,14 @@ class MasterEquation(Base):
         """
 
         super(MasterEquation, self).__init__(cfg)
-        self.initial_state = None
-        self.constitutive_states = None
-        self.constitutive_states_strings = None
-        self.generator_matrix= None
-        self.results = None
-        self.dt = None
+        self._initial_state = None
+        self._constitutive_states = None
+        self._constitutive_states_strings = None
+        self._generator_matrix= None
+        self._results = None
+        self._dt = None
         self._initial_species = initial_species
+
         # MPI communicator
         self.comm = MPI.COMM_WORLD if MPI_ON else None
         # unique process id
@@ -183,7 +185,7 @@ class MasterEquation(Base):
         self.size = self.comm.Get_size() if MPI_ON else None
         self.parallel = MPI_ON and self.size > 1
 
-        if initial_species is not None:
+        if initial_species and not empty:
             with timeit() as set_initial_states:
                 self._set_initial_state()
             with timeit() as set_constitutive_states:
@@ -206,13 +208,13 @@ class MasterEquation(Base):
                 i = np.argwhere(all_species == species)
                 initial_state[i] = quantity
 
-        self.initial_state = initial_state
+        self._initial_state = initial_state
 
     def _set_constitutive_states(self):
         """Constructs all possible constitutive states from the intial state."""
 
-        constitutive_states = [list(self.initial_state)]
-        newly_added_unique_states = [self.initial_state]
+        constitutive_states = [list(self._initial_state)]
+        newly_added_unique_states = [self._initial_state]
         while True:
             accepted_candidate_states = []
             for state in newly_added_unique_states:
@@ -238,8 +240,8 @@ class MasterEquation(Base):
 
             constitutive_states_strings.append(word)
 
-        self.constitutive_states = constitutive_states
-        self.constitutive_states_strings =  constitutive_states_strings
+        self._constitutive_states = constitutive_states
+        self._constitutive_states_strings =  constitutive_states_strings
 
     def _set_generator_matrix(self) -> None:
         """Constructs the generator matrix."""
@@ -281,7 +283,7 @@ class MasterEquation(Base):
             self.comm.Allgatherv(sendbuf=generator_matrix_local,
                                  recvbuf=(generator_matrix_global, sendcounts, displacements, MPI.INT))
 
-        self.generator_matrix = generator_matrix_global
+        self._generator_matrix = generator_matrix_global.transpose()
 
     def update_rates(self, new_rates: Dict[str, float]) -> None:
         """Updates rates."""
@@ -294,35 +296,38 @@ class MasterEquation(Base):
     def reset_rates(self) -> None:
         """Resets rates to values from the config file."""
 
-        self._rates_from_config = self._unprocessed_data['rates']
+        self._rates_from_config = self._unprocessed_cfg_data['rates'].copy()
         self._set_rates()
         self._set_generator_matrix()
 
-    def run(self, start: float = None, stop: float = None, step: float = None) -> None:
+    def run(self, start: float = None, stop: float = None, step: float = None, uniform=False) -> None:
         """Run."""
 
-        self.dt = step
+        self._dt = step
         # using np.round to avoid floating point precision errors
-        n_timesteps = int(np.round((stop - start) / self.dt))
-        n_states = len(self.constitutive_states)
+        n_timesteps = int(np.round((stop - start) / self._dt))
+        n_states = len(self._constitutive_states)
         probability_vectors = np.empty(shape=(n_timesteps, n_states))
 
         # only 1 process does this
         if not self.parallel or self.rank == 0:
-            initial_probability_vector = np.zeros(shape=n_states)
-            # set the initial probability vector to have probability 1 at the initial state
-            for i, state in enumerate(self.constitutive_states):
-                if np.array_equal(state, self.initial_state):
-                    initial_probability_vector[i] = 1
-                    break
+            if uniform:
+                initial_probability_vector = np.ones(shape=n_states) / n_states
+            else:
+                initial_probability_vector = np.zeros(shape=n_states)
+                # set the initial probability vector to have probability 1 at the initial state
+                for i, state in enumerate(self._constitutive_states):
+                    if np.array_equal(state, self._initial_state):
+                        initial_probability_vector[i] = 1
+                        break
             probability_vectors[0] = initial_probability_vector
 
             with timeit() as matrix_exponential:
                 # propagator matrix
-                Q = linalg.expm(self.generator_matrix*self.dt)
+                Q = linalg.expm(self._generator_matrix*self._dt)
             with timeit() as run_time:
                 for ts in ProgressBar(range(n_timesteps - 1), desc=f'rank {self.rank} running.'):
-                    probability_vectors[ts+1] = probability_vectors[ts].dot(Q)
+                    probability_vectors[ts+1] = Q.dot(probability_vectors[ts])
 
             self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
             self.timings['t_run'] = run_time.elapsed
@@ -333,13 +338,29 @@ class MasterEquation(Base):
         if self.parallel:
             self.comm.Bcast(probability_vectors, root=0)
 
-        self.results = probability_vectors
+        self._results = probability_vectors
+
+    @property
+    def constitutive_states(self):
+        return self._constitutive_states
+    @constitutive_states.setter
+    def constitutive_states(self, value):
+        self._constitutive_states = value
+    @property
+    def generator_matrix(self):
+        return self._generator_matrix
+    @property
+    def results(self):
+        return self._results
+    @results.setter
+    def results(self, value):
+        self._results = value
 
 
-class Gillespie(Base):
+class Gillespie(SimulatorBase):
 
     def __init__(self):
-        super(Base, self).__init__()
+        super(Gillespie, self).__init__()
 
     def run(self):
         pass

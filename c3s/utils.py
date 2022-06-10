@@ -3,6 +3,7 @@ import time
 from tqdm.auto import tqdm
 from typing import List
 
+
 class timeit(object):
     """Measures the time elapsed during the execution of a block of code.
 
