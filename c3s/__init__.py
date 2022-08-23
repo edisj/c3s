@@ -1,7 +1,7 @@
 """A tool for stochastically simulating chemcial systems"""
 
 # Add imports here
-from .simulators import MasterEquation
+from . import simulators
 
 # Handle versioneer
 from ._version import get_versions
