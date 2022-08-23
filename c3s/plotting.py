@@ -15,8 +15,8 @@ class PlottingMixin:
 
         fig, ax = plt.subplots(figsize=(10,6))
         sns.despine()
-        plt.style.use('cyberpunk')
-        mplcyberpunk.make_lines_glow(ax)
+        #plt.style.use('cyberpunk')
+        #mplcyberpunk.make_lines_glow(ax)
         title = ''
         for molec in molecules:
             title += f'n_{{{molec}}},'
@@ -36,8 +36,8 @@ class PlottingMixin:
 
         fig, ax = plt.subplots(figsize=(10, 6))
         sns.despine()
-        plt.style.use('cyberpunk')
-        mplcyberpunk.make_lines_glow(ax)
+        #plt.style.use('cyberpunk')
+        #mplcyberpunk.make_lines_glow(ax)
         title1 = ''
         title2 = ''
         for x in X:

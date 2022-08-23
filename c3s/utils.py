@@ -1,7 +1,7 @@
 import numpy as np
 import time
 from tqdm.auto import tqdm
-from typing import List
+from typing import Tuple
 
 
 class timeit(object):
@@ -22,7 +22,7 @@ class timeit(object):
         return False
 
 
-def slice_tasks_for_parallel_workers(n_tasks: int, n_workers: int) -> List[slice]:
+def slice_tasks_for_parallel_workers(n_tasks: int, n_workers: int, rank: int) -> Tuple[int, int]:
     """Makes approximately even sized slices for some set of parallel workers
     to use as indices for their local block of work."""
 
@@ -35,8 +35,10 @@ def slice_tasks_for_parallel_workers(n_tasks: int, n_workers: int) -> List[slice
     ids = np.cumsum(np.concatenate(([0], blocksizes)))
     # use block boundaries as indices for slices
     slices = [slice(start, stop, 1) for start, stop in zip(ids[:-1], ids[1:])]
+    start = slices[rank].start
+    stop = slices[rank].stop
 
-    return slices
+    return start, stop
 
 class ProgressBar(tqdm):
     """tqdm progress bar with the default settings I want."""

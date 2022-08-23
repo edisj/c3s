@@ -148,17 +148,17 @@ class TestMasterEquationToyModel:
     def test_generator_matrix(self, test_system):
 
         correct_generator_matrix = [
-            [-4, 2,   1,  0,   0,  0],
-            [3,-10,   6,  2,   1,  0],
-            [1,  4, -11,  0,   2,  1],
-            [0,  3,   0, -6,   6,  0],
-            [0,  1,   3,  4, -13,  6],
-            [0,  0,   1,  0,   4, -7]]
+            [-8, 2, 1, 0, 0, 0],
+            [6, -10, 6, 4, 1, 0],
+            [2, 4, -11, 0, 2, 2],
+            [0, 3, 0, -12, 6, 0],
+            [0, 1, 3, 8, -13, 12],
+            [0, 0, 1, 0, 4, -14]]
 
         test_m = test_system.generator_matrix
         assert_equal(correct_generator_matrix, test_m)
 
-    def test_changing_rates(self, test_system):
+    def test_update_rates(self, test_system):
 
         rate_from_config = 3
         new_rate = 10
@@ -166,8 +166,25 @@ class TestMasterEquationToyModel:
         assert_equal(test_system.rates[0], rate_from_config)
         test_system.update_rates({test_system.rate_strings[0]: new_rate})
         assert_equal(test_system.rates[0], new_rate)
+
+    def test_reset_rates(self, test_system):
+
+        rate_from_config = 3
+        new_rate = 10
+        test_system.update_rates({test_system.rate_strings[0]: new_rate})
+
+        correct_generator_matrix = [
+            [-8, 2, 1, 0, 0, 0],
+            [6, -10, 6, 4, 1, 0],
+            [2, 4, -11, 0, 2, 2],
+            [0, 3, 0, -12, 6, 0],
+            [0, 1, 3, 8, -13, 12],
+            [0, 0, 1, 0, 4, -14]]
+
         test_system.reset_rates()
+        test_matrix = test_system.generator_matrix
         assert_equal(test_system.rates[0], rate_from_config)
+        assert_equal(correct_generator_matrix, test_matrix)
 
     def test_mutual_information_old(self, test_system):
 
