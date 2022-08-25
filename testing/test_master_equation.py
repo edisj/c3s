@@ -18,7 +18,7 @@ class TestMutualInformationWithSyntheticData:
 
     @pytest.fixture(scope='class')
     def synthetic_system(self):
-        empty_system = c3s.simulators.MasterEquation(empty=True)
+        empty_system = c3s.simulators.simulators.MasterEquation(empty=True)
 
         # make up fake species
         species = ['X', 'Y', 'Z']
@@ -53,7 +53,7 @@ class TestABCToyModel:
 
     @pytest.fixture(scope='class')
     def ABC_system(self):
-        system = c3s.simulators.MasterEquation(initial_species={'A': 2}, cfg='ABC.cfg')
+        system = c3s.simulators.simulators.MasterEquation(initial_species={'A': 2}, cfg='ABC.cfg')
         start, stop, step = 0, 0.1, 0.01
         system.run(start=start, stop=stop, step=step)
         yield system
@@ -120,7 +120,7 @@ class TestMasterEquationToyModel:
 
     @pytest.fixture(scope='class')
     def test_system(self):
-        system = c3s.simulators.MasterEquation(initial_species={'A': 2}, cfg='config_for_tests.cfg')
+        system = c3s.simulators.simulators.MasterEquation(initial_species={'A': 2}, cfg='config_for_tests.cfg')
         start, stop, step = 0, 3, 0.001
         system.run(start=start, stop=stop, step=step)
         yield system

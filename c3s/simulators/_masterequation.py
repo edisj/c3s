@@ -1,10 +1,10 @@
 import numpy as np
+import math
 import yaml
 import copy
 from scipy.sparse.linalg import expm
 from pathlib import Path
 from c3s.utils import timeit, ProgressBar, slice_tasks_for_parallel_workers
-from c3s.plotting import PlottingMixin
 from typing import List, Dict, Union
 try:
     from mpi4py import MPI
@@ -115,7 +115,7 @@ class SimulatorBase:
 
         return propensity_strings
 
-    def run(self) -> None:
+    def run(self, start, stop, step) -> None:
         """Runs the simulator of the child Class."""
         pass
 
@@ -139,7 +139,7 @@ class SimulatorBase:
         self._rates = value
 
 
-class MasterEquation(SimulatorBase, PlottingMixin):
+class MasterEquation(SimulatorBase):
     """Simulator of the Chemical Master Equationn."""
 
     def __init__(self, cfg: str = None, empty: bool = False, **initial_populations) -> None:
@@ -335,7 +335,6 @@ class MasterEquation(SimulatorBase, PlottingMixin):
         for k, (original_rate, current_rate) in enumerate(zip(rates_from_config, self._rates)):
             original_value = original_rate[1]
             current_value = current_rate[1]
-            print(original_value, current_value)
             if original_value != current_value:
                 propensity_adjustment_factor = original_value / current_value
                 self._rates[k][1] = original_value
@@ -347,7 +346,7 @@ class MasterEquation(SimulatorBase, PlottingMixin):
             self._generator_matrix[m,m] = 0
             self._generator_matrix[m,m] = -np.sum(self._generator_matrix[:, m])
 
-    def run(self, start: float = None, stop: float = None, step: float = None) -> None:
+    def run(self, start, stop, step) -> None:
         """Run."""
 
         self._dt = step
@@ -391,10 +390,7 @@ class MasterEquation(SimulatorBase, PlottingMixin):
     def P(self, value):
         self._results = value
 
-    def calculate_mutual_information(self,
-                                     X: Union[List[str], str],
-                                     Y: Union[List[str], str],
-                                     timestep: Union[str, int] = 'all') -> np.ndarray:
+    def calculate_mutual_information(self, X, Y, timestep='all', base=math.e) -> np.ndarray:
         """Calculates the mutual information."""
 
         if timestep != 'all':
@@ -403,11 +399,10 @@ class MasterEquation(SimulatorBase, PlottingMixin):
             n_timesteps = len(self.P)
         except TypeError:
             raise ValueError('No data found in self.results attribute.')
-
         if isinstance(X, str):
-            X = list(X)
+            X = [X]
         if isinstance(Y, str):
-            Y = list(Y)
+            Y = [Y]
         if X+Y != sorted(X+Y):
             X, Y = Y, X
 
@@ -447,7 +442,7 @@ class MasterEquation(SimulatorBase, PlottingMixin):
                             continue
                         p_x = np.sum(probability_vector[idx])
                         p_y = np.sum(probability_vector[idy])
-                        this_term = p_xy * np.log(p_xy / (p_x * p_y))
+                        this_term = p_xy * math.log(p_xy / (p_x * p_y), base)
                         mutual_information += this_term
 
                 mutual_information_local[i] = mutual_information
@@ -464,18 +459,38 @@ class MasterEquation(SimulatorBase, PlottingMixin):
 
     def calculate_marginal_probability_evolution(self, molecules: List[str]):
         """"""
+
         if self.P is None:
             raise ValueError('No data found in self.results attribute.')
-        P = self.P
         point_maps = self._get_point_mappings(molecules)
         distribution: Dict[tuple, np.ndarray] = {}
         for point, map in point_maps.items():
-            distribution[point] = np.array([sum(vec[map]) for vec in P])
+            distribution[point] = np.array([ np.sum(self.P[ts][map]) for ts in range(len(self.P)) ])
 
         return distribution
 
-    def _get_point_mappings(self, molecules: List[str]) -> Dict[tuple, List[int]]:
-        """Maps the indices of the microstates in the `system.constitutive_states` vector to their
+    def calculate_average_population(self, species: str):
+        """"""
+
+        average_population = np.empty(shape=len(self.P), dtype=np.float64)
+        if self.P is None:
+            raise ValueError('No data found in self.results attribute.')
+        P = self.P
+        point_maps = self._get_point_mappings(species)
+        for ts in range(len(self.P)):
+            total = 0
+            for point, map in point_maps.items():
+                assert len(point) == 1
+                count = point[0]
+                count_term = np.sum( count*self.P[ts][map] )
+                total += count_term
+
+            average_population[ts] = total
+
+        return average_population
+
+    def _get_point_mappings(self, molecules: Union[List[str], str]) -> Dict[tuple, List[int]]:
+        """Maps the indices of the microstates in the `system.states` vector to their
         marginal probability distribution domain points for the specified molecular species.
 
         e.g. find where each (x,y,z) point in p(x,y,z) maps in p(x) if the set of (x,y,z) points were
@@ -483,6 +498,8 @@ class MasterEquation(SimulatorBase, PlottingMixin):
 
         """
 
+        if isinstance(molecules, str):
+            molecules = [molecules]
         # indices that correspond to the selected molecular species in the ordered species list
         ids = [self.species.index(n) for n in sorted(molecules)]
         truncated_points = np.array(self.states)[:, ids]
