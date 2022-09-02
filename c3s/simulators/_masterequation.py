@@ -403,6 +403,8 @@ class MasterEquation(SimulatorBase):
             X = [X]
         if isinstance(Y, str):
             Y = [Y]
+        X = sorted(X)
+        Y = sorted(Y)
         if X+Y != sorted(X+Y):
             X, Y = Y, X
 
