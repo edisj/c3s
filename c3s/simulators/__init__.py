@@ -1,3 +1,3 @@
 __all__ = ['MasterEquation']
 
-from ._masterequation import MasterEquation
+from .masterequation import MasterEquation

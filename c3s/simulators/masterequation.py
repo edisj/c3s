@@ -274,13 +274,11 @@ class MasterEquation(SimulatorBase):
                             self._G_propensity_ids[k].append((global_i, j))
                             break
 
-        #if self.parallel:
-            # sendcounts tells comm.Allgatherv() how many elements are sent from each process
-            #sendcounts = tuple(n_states * (slices[i].stop - slices[i].start) for i in range(self.size))
-            # displacements tells comm.Allgatherv() the start index in the global array of each process' data
-            #displacements = tuple(n_states * boundary.start for boundary in slices)
-            #self.comm.Allgatherv(sendbuf=G_local,
-            #                     recvbuf=(G_global, sendcounts, displacements, MPI.DOUBLE))
+        if self.parallel:
+            sendcounts = self.comm.allgather(M*local_blocksize)
+            displacements = self.comm.allgather(M*start)
+            self.comm.Allgatherv(sendbuf=G_local,
+                                 recvbuf=(G_global, sendcounts, displacements, MPI.DOUBLE))
         for i in range(len(G_global)):
             # fix the diagonal to be the negative sum of the column
             G_global[i,i] = -np.sum(G_global[:, i])
@@ -313,10 +311,13 @@ class MasterEquation(SimulatorBase):
             for k, old_rate in enumerate(self._rates):
                 if old_rate[0] == new_rate_string:
                     propensity_adjustment_factor = new_rate_value / old_rate[1]
+                    print(f'updating rate {k}, old_rate = {old_rate}, new_rate = {new_rate_value}\n propensity adjustment = {propensity_adjustment_factor}' )
                     # make sure to do this after saving the propensity factor
                     self._rates[k][1] = new_rate_value
                     # the generator matrix also changes when the rates change
                     G_elements_affected = self._G_propensity_ids[k]
+                    print(self._G_propensity_ids)
+                    print(f'G elements affected = {G_elements_affected}')
                     for idx in G_elements_affected:
                         self._generator_matrix[idx] = self._generator_matrix[idx] * propensity_adjustment_factor
                     break
@@ -354,8 +355,8 @@ class MasterEquation(SimulatorBase):
         n_timesteps = int(np.round((stop - start) / self._dt))
         M = len(self._constitutive_states)
         P = np.empty(shape=(n_timesteps, M), dtype=np.float64)
-        P[0] = np.zeros(shape=M, dtype=np.float64)
         # fixing initial probability to be 1 in the intitial state
+        P[0] = np.zeros(shape=M, dtype=np.float64)
         P[0,0] = 1
 
         # only 1 process does this because naively parallelizing matrix*vector
@@ -449,11 +450,11 @@ class MasterEquation(SimulatorBase):
 
                 mutual_information_local[i] = mutual_information
 
-            #if self.parallel:
-                #sendcounts = tuple(slices[i].stop - slices[i].start for i in range(self.size))
-                #displacements = tuple(slice_.start for slice_ in slices)
-                #self.comm.Allgatherv(sendbuf=mutual_information_local,
-                #                       recvbuf=(mutual_information_global, sendcounts, displacements, MPI.DOUBLE))
+            if self.parallel:
+                sendcounts = self.comm.allgather(local_blocksize)
+                displacements = self.comm.allgather(start)
+                self.comm.Allgatherv(sendbuf=mutual_information_local,
+                                     recvbuf=(mutual_information_global, sendcounts, displacements, MPI.DOUBLE))
 
         self.timings['t_calculate_mutual_information'] = calculation_block.elapsed
 
@@ -529,8 +530,26 @@ class MasterEquation(SimulatorBase):
 
         return point_maps
 
+    def _calculate_matrix_element(self, i, j):
+        """"""
+
+        Pi = self.P[i]
+        Pj = self.P[j]
+        # time gap between i and j
+        dt = abs(j - i) * self._dt
+        # propagator for this dt
+        Q = expm(self.G * dt)
+
+
+
     def calculate_mutual_information_matrix(self, X: List[str], Y: List[str]) -> np.ndarray:
         """Calculates the mutual information between every pair of timepoints."""
+
+
+
+
+
+
 
         n_timesteps = len(self.P)
         dts = [self._dt*timestep for timestep in range(n_timesteps)]

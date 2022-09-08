@@ -22,7 +22,7 @@ class timeit(object):
         return False
 
 
-def slice_tasks_for_parallel_workers(n_tasks: int, n_workers: int, rank: int) -> Tuple[int, int]:
+def slice_tasks_for_parallel_workers(n_tasks, n_workers, rank):
     """Makes approximately even sized slices for some set of parallel workers
     to use as indices for their local block of work."""
 
