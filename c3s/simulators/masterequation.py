@@ -240,22 +240,25 @@ class MasterEquation(SimulatorBase):
         by `len(self.constitutive_states)`.
         """
 
-        M = len(self._constitutive_states)
-
         if self.parallel:
-            start, stop = slice_tasks_for_parallel_workers(n_tasks=M, n_workers=self.size, rank=self.rank)
-            local_blocksize = stop - start
-            G_local = np.zeros(shape=(local_blocksize, M), dtype=np.float64)
-            G_global = np.empty(shape=(M, M), dtype=np.float64)
+            self._set_G_parallel()
         else:
-            start, stop = 0, M
-            G_local = G_global = np.zeros(shape=(M, M), dtype=np.float64)
+            self._set_G_serial()
+
+    def _set_G_parallel(self):
+        """"""
+
+        M = len(self._constitutive_states)
+        start, stop = slice_tasks_for_parallel_workers(n_tasks=M, n_workers=self.size, rank=self.rank)
+        local_blocksize = stop - start
+        G_local = np.zeros(shape=(local_blocksize, M), dtype=np.float64)
+        G_global = np.empty(shape=(M, M), dtype=np.float64)
 
         self._G_propensity_ids = {k: [] for k in range(len(self._reaction_matrix))}
 
         # we fill this matrix one row at a time
         for local_i, global_i in enumerate(ProgressBar(range(start, stop), position=self.rank,
-                                           desc=f'rank {self.rank} working on generator matrix.')):
+                                                       desc=f'rank {self.rank} working on generator matrix.')):
             # G_ij = propensity j -> i, so we are looking for any j state that can transition to i
             state_i = self._constitutive_states[global_i]
             for j in range(M):
@@ -274,16 +277,20 @@ class MasterEquation(SimulatorBase):
                             self._G_propensity_ids[k].append((global_i, j))
                             break
 
-        if self.parallel:
-            sendcounts = self.comm.allgather(M*local_blocksize)
-            displacements = self.comm.allgather(M*start)
-            self.comm.Allgatherv(sendbuf=G_local,
-                                 recvbuf=(G_global, sendcounts, displacements, MPI.DOUBLE))
+        sendcounts = self.comm.allgather(M * local_blocksize)
+        displacements = self.comm.allgather(M * start)
+        self.comm.Allgatherv(sendbuf=G_local,
+                             recvbuf=(G_global, sendcounts, displacements, MPI.DOUBLE))
         for i in range(len(G_global)):
             # fix the diagonal to be the negative sum of the column
-            G_global[i,i] = -np.sum(G_global[:, i])
+            G_global[i, i] = -np.sum(G_global[:, i])
 
         self._generator_matrix = G_global
+
+    def _set_G_serial(self):
+        """"""
+
+        M = len(self._constitutive_states)
 
     def get_readable_G(self) -> List[List[str]]:
         """creates a readable generator matrix with string names"""
@@ -348,8 +355,15 @@ class MasterEquation(SimulatorBase):
             self._generator_matrix[m,m] = -np.sum(self._generator_matrix[:, m])
 
     def run(self, start, stop, step) -> None:
-        """Run."""
+        """run"""
 
+        if self.parallel:
+            self._run_parallel(start, stop, step)
+        else:
+            self._run_serial(start, stop, step)
+
+    def _run_parallel(self, start, stop, step):
+        """"""
         self._dt = step
         # using np.round to avoid floating point precision errors
         n_timesteps = int(np.round((stop - start) / self._dt))
@@ -357,16 +371,16 @@ class MasterEquation(SimulatorBase):
         P = np.empty(shape=(n_timesteps, M), dtype=np.float64)
         # fixing initial probability to be 1 in the intitial state
         P[0] = np.zeros(shape=M, dtype=np.float64)
-        P[0,0] = 1
+        P[0, 0] = 1
 
         # only 1 process does this because naively parallelizing matrix*vector
         # operation is very slow compared to numpy optimized speeds
         if not self.parallel or self.rank == 0:
             with timeit() as matrix_exponential:
-                Q = expm(self._generator_matrix*self._dt)
+                Q = expm(self._generator_matrix * self._dt)
             with timeit() as run_time:
                 for ts in ProgressBar(range(n_timesteps - 1), desc=f'rank {self.rank} running.'):
-                    P[ts+1] = Q.dot(P[ts])
+                    P[ts + 1] = Q.dot(P[ts])
             self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
             self.timings['t_run'] = run_time.elapsed
 
@@ -374,6 +388,10 @@ class MasterEquation(SimulatorBase):
             self.comm.Bcast(P, root=0)
 
         self._results = P
+
+    def _run_serial(self, start, stop, step):
+        """"""
+        pass
 
     @property
     def states(self):
@@ -605,3 +623,15 @@ class MasterEquation(SimulatorBase):
             np.fill_diagonal(MI_matrix, main_diagonal)
 
         return MI_matrix
+
+
+class Gillespie(SimulatorBase):
+    """"""
+
+    def __init__(self, cfg, **initial_populations):
+        """"""
+
+        np.seterr(under='raise')
+        super(Gillespie, self).__init__(cfg)
+
+        
