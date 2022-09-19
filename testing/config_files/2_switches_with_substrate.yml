@@ -1,14 +1,6 @@
 ---
 reactions:
-  A + S -> AS:
-    - k_1
-    - 1
-  AS -> A + S:
-    - k_2
-    - 1
-  B + S -> BS:
-    - k_3
-    - 1
-  BS -> B + S:
-    - k_4
-    - 1
+  A + S -> AS:    [k_1, 1]
+  AS    -> A + S: [k_2, 1]
+  B + S -> BS:    [k_3, 1]
+  BS    -> B + S: [k_4, 1]

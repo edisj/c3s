@@ -1,20 +1,8 @@
 ---
 reactions:
-  A + S -> AS:
-    - k_1
-    - 50
-  AS -> A + S:
-    - k_2
-    - 25
-  AS -> A + P:
-    - k_3
-    - 10
-  B + P -> BP:
-    - k_4
-    - 50
-  BP -> B + P:
-    - k_5
-    - 50
-  P -> 0:
-    - k_6
-    - 0
+  A + S -> AS:    [k_AS+, 50]
+  AS    -> A + S: [k_AS-, 25]
+  AS    -> A + P: [f_P,   10]
+  B + P -> BP:    [k_BP+, 50]
+  BP    -> B + P: [k_BP-, 50]
+  P     -> 0:     [d_P,    0]
