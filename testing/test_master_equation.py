@@ -5,7 +5,7 @@ import pytest
 import sys
 import numpy as np
 import math
-from c3s.simulators import CME
+from c3s.simulators import ChemicalMasterEquation
 from numpy.testing import assert_almost_equal, assert_equal, assert_array_almost_equal
 
 
@@ -18,7 +18,7 @@ class TestMutualInformationWithSyntheticData:
 
     @pytest.fixture(scope='class')
     def synthetic_system(self):
-        empty_system = CME(empty=True)
+        empty_system = ChemicalMasterEquation(cfg=None, empty=True)
 
         # make up fake species
         species = ['X', 'Y', 'Z']
@@ -34,7 +34,7 @@ class TestMutualInformationWithSyntheticData:
         # fill in the system with synthetic data
         empty_system.species = species
         empty_system.states = constitutive_states
-        empty_system.P = results
+        empty_system.P_trajectory = results
 
         yield empty_system
 
@@ -53,14 +53,14 @@ class TestBinarySystem:
 
     @pytest.fixture(scope='class')
     def binary(self):
-        system =  CME(cfg='config_files/binary.yml', initial_populations={'A':1})
+        system =  ChemicalMasterEquation(cfg='config_files/binary.yml', initial_populations={'A':1})
         start, stop, step = 0, 1, 0.01
         system.run(start, stop, step)
         yield system
 
     @pytest.fixture(scope='class')
     def binary_many_body(self):
-        system = CME(cfg='config_files/binary.yml', initial_populations={'A':3})
+        system = ChemicalMasterEquation(cfg='config_files/binary.yml', initial_populations={'A':3})
         start, stop, step = 0, 1, 0.01
         system.run(start, stop, step)
         yield system
@@ -138,7 +138,7 @@ class Test2IsolatedSwitch:
 
     @pytest.fixture(scope='class')
     def isolated_switches(self):
-        system = CME(cfg='config_files/2_isolated_switches.yml', initial_populations={'A':1, 'B':1})
+        system = ChemicalMasterEquation(cfg='config_files/2_isolated_switches.yml', initial_populations={'A':1, 'B':1})
         start, stop, step = 0, 1, 0.01
         system.run(start, stop, step)
         yield system

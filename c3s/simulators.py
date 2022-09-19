@@ -4,16 +4,17 @@ import copy
 import h5py
 import random
 import numpy as np
+from typing import List, Dict
 from collections import namedtuple
 from scipy.sparse.linalg import expm
-from c3s.utils import timeit, ProgressBar, slice_tasks_for_parallel_workers
-from typing import List, Dict
 try:
     from mpi4py import MPI
 except ImportError:
     MPI_ON = False
 else:
     MPI_ON = True
+from .calculations import CalculationsMixin
+from .utils import timeit, ProgressBar, split_tasks_for_workers
 
 
 class SimulatorBase:
@@ -29,7 +30,16 @@ class SimulatorBase:
         Parameters
         ----------
         cfg : str
-            Path to config file that defines all chemical reactions and rates in yaml format.
+            Path to yaml config file that specifies chemical reactions and kinetic rates
+        filename : str
+        mode : str, default='x'
+        system_name : str
+        initial_state : list of int or array_like
+        initial_populations : dict, default=None
+            The initial population a particular species. If a species population is
+            not specified, it's initial population is taken to be 0.
+        max_populations : dict
+        empty : bool
 
         """
 
@@ -158,11 +168,11 @@ class SimulatorBase:
               of `self.species` that are involved in the k'th reaction
         """
 
-        n_reactions = len(self._reactants)
-        n_species = len(self.species)
-        reaction_matrix = np.zeros(shape=(n_reactions,n_species), dtype=np.int32)
+        N_reactions = len(self._reactants)
+        N_species = len(self._species)
+        reaction_matrix = np.zeros(shape=(N_reactions, N_species), dtype=np.int32)
         for reaction, reactants, products in zip(reaction_matrix, self._reactants, self._products):
-            for i, species in enumerate(self.species):
+            for i, species in enumerate(self._species):
                 # if this species in both a product and reactant, net effect is 0
                 if species in reactants:
                     reaction[i] += -1
@@ -170,14 +180,14 @@ class SimulatorBase:
                     reaction[i] += 1
 
         self._reaction_matrix = reaction_matrix
-        self._propensity_indices = [[n for n in range(len(self._species)) if reaction_matrix[k,n] < 0]
-                                     for k in range(len(reaction_matrix))]
+        self._propensity_indices = [[n for n in range(N_species) if reaction_matrix[k,n] < 0]
+                                    for k in range(len(reaction_matrix))]
 
     def get_propensity_strings(self):
         """creates a readable list of the propensity of each reaction"""
 
         propensity_strings: List[str] = []
-        for propensity_ids, rate in zip(self._propensity_indices, self.rates):
+        for propensity_ids, rate in zip(self._propensity_indices, self._rates):
             transition_rate = rate[0]
             for n in propensity_ids:
                 transition_rate += f'c^{self._species[n]}'
@@ -185,19 +195,18 @@ class SimulatorBase:
 
         return propensity_strings
 
-    def run(self, *args, **kwargs):
-        """runs the simulator of the child class"""
-        pass
-
     def reset_rates(self):
         """resets `self.rates` to the original values from the config file"""
-
         rates_from_config = [rate for rate in self._config_dictionary['reactions'].values()]
         original_rates = {rate[0]: rate[1] for rate in rates_from_config}
         self.update_rates(original_rates)
 
     def update_rates(self, new_rates):
         """the child class decides what to do with this"""
+        pass
+
+    def run(self, *args, **kwargs):
+        """runs the simulator of the child class"""
         pass
 
     @property
@@ -271,10 +280,10 @@ class Gillespie(SimulatorBase):
             - imagine a number line from 0-1, call it L
             - take the probability of each possible outcome and fill the corresponding section on the line.
               for example, if event p(A) = 25%, then the numbers 0-0.25 correspond to event A.
-              call the section that the i'th event takes up on the line L_i
+              call the section that the k'th event takes up on the line L_k
             - sample a uniform random number, u,  between 0 and 1
             - find the smallest index k such that u < L_1 + ... + L_k + ... + L_K
-            - that index, k, gives which event was selected
+            - k gives the index of which event was sampled
 
         """
         u = random.uniform(0, 1)
@@ -338,20 +347,20 @@ class Gillespie(SimulatorBase):
         self._results = trajectory
 
     def run_many_iterations(self, N_iterations, N_timesteps):
-        """"""
+        """
+
+        Parameters
+        ----------
+        N_iterations : int
+        N_timesteps  : int
+
+        """
 
         N_species = len(self._species)
-        if self.parallel:
-            start, stop = slice_tasks_for_parallel_workers(n_tasks=N_iterations, n_workers=self.size, rank=self.rank)
-            local_blocksize = stop - start
-            trajectories = np.empty(shape=(local_blocksize, N_timesteps, N_species), dtype=np.int32)
-            holding_times = np.empty(shape=(local_blocksize, N_timesteps - 1), dtype=np.float64)
-            trajectories_global = np.empty(shape=(N_iterations, N_timesteps, N_species), dtype=np.int32)
-            holding_times_global = np.empty(shape=(N_iterations, N_timesteps - 1), dtype=np.float64)
-        else:
-            start, stop = 0, N_iterations
-            trajectories = trajectories_global = np.empty(shape=(N_iterations, N_timesteps, N_species), dtype=np.int32)
-            holding_times = holding_times_global = np.empty(shape=(N_iterations, N_timesteps - 1), dtype=np.float64)
+        start, stop = split_tasks_for_workers(N_tasks=N_iterations, N_workers=self.size, rank=self.rank)
+        local_blocksize = stop - start
+        trajectories = np.empty(shape=(local_blocksize, N_timesteps, N_species), dtype=np.int32)
+        holding_times = np.empty(shape=(local_blocksize, N_timesteps - 1), dtype=np.float64)
 
         for ts in range(start, stop):
             self.run(N_timesteps, overwrite=True)
@@ -359,16 +368,19 @@ class Gillespie(SimulatorBase):
             holding_times[ts] = self.trajectory.holding_times
 
         if self.parallel:
+            trajectories_global = np.empty(shape=(N_iterations, N_timesteps, N_species), dtype=np.int32)
             traj_sendcounts = self.comm.allgather(trajectories.size)
             traj_displacements = self.comm.allgather(self.rank * trajectories.size)
+            self.comm.Allgatherv(
+                sendbuf=trajectories, recvbuf=(trajectories_global, traj_sendcounts, traj_displacements, MPI.INT))
+            holding_times_global = np.empty(shape=(N_iterations, N_timesteps - 1), dtype=np.float64)
             h_sendcounts = self.comm.allgather(holding_times.size)
             h_displacements = self.comm.allgather(self.rank * holding_times.size)
             self.comm.Allgatherv(
-                sendbuf=trajectories, recvbuf=(trajectories_global, traj_sendcounts, traj_displacements, MPI.INT))
-            self.comm.Allgatherv(
                 sendbuf=holding_times, recvbuf=(holding_times_global, h_sendcounts, h_displacements, MPI.DOUBLE))
-
-        self._results = (trajectories_global, holding_times_global)
+            self._results = (trajectories_global, holding_times_global)
+        else:
+            self._results = (trajectories, holding_times)
 
     @property
     def trajectory(self):
@@ -376,12 +388,18 @@ class Gillespie(SimulatorBase):
     @trajectory.setter
     def trajectory(self, value):
         self._results = value
+    @property
+    def Trajectories(self):
+        return self._results
+    @Trajectories.setter
+    def Trajectories(self, value):
+        self._results = value
 
 
-class ChemicalMasterEquation(SimulatorBase):
+class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
     """Simulator class of the Chemical Master Equationn (CME)."""
 
-    def __init__(self, cfg, filename=None, mode='x', system_name=None,
+    def __init__(self, cfg=None, filename=None, mode='x', system_name=None,
                  initial_state=None, initial_populations=None, max_populations=None, empty=False):
         """Uses the Chemical Master Equation to propagate the time
            evolution of the probability dynamics of a chemical system.
@@ -407,7 +425,7 @@ class ChemicalMasterEquation(SimulatorBase):
         empty : bool
 
         """
-        super(ChemicalMasterEquation, self).__init__(cfg, filename=filename, mode=mode, system_name=system_name,
+        super(ChemicalMasterEquation, self).__init__(cfg=cfg, filename=filename, mode=mode, system_name=system_name,
                                                      initial_state=initial_state, initial_populations=initial_populations,
                                                      max_populations=max_populations, empty=empty)
         self._constitutive_states = None
@@ -473,18 +491,13 @@ class ChemicalMasterEquation(SimulatorBase):
 
         The generator matrix is an MxM matrix where M is the total number of states given
         by `len(self.constitutive_states)`.
+
         """
 
         M = len(self._constitutive_states)
         K = len(self._reaction_matrix)
-        if self.parallel:
-            start, stop = slice_tasks_for_parallel_workers(n_tasks=M, n_workers=self.size, rank=self.rank)
-            local_blocksize = stop - start
-            G_local = np.zeros(shape=(local_blocksize, M), dtype=np.float64)
-            G = np.zeros(shape=(M, M), dtype=np.float64)
-        else:
-            start, stop = 0, M
-            G = G_local = np.zeros(shape=(M, M), dtype=np.float64)
+        start, stop, blocksize = split_tasks_for_workers(N_tasks=M, N_workers=self.size, rank=self.rank)
+        G_local = np.zeros(shape=(blocksize, M), dtype=np.float64)
 
         self._G_propensity_ids = {k: [] for k in range(K)}
 
@@ -513,10 +526,10 @@ class ChemicalMasterEquation(SimulatorBase):
                             break
 
         if self.parallel:
-            G_sendcounts = self.comm.allgather(M * local_blocksize)
+            G_global = np.zeros(shape=(M,M), dtype=np.float64)
+            G_sendcounts = self.comm.allgather(M * blocksize)
             G_displacements = self.comm.allgather(M * start)
-            self.comm.Allgatherv(sendbuf=G_local,
-                                 recvbuf=(G, G_sendcounts, G_displacements, MPI.DOUBLE))
+            self.comm.Allgatherv(sendbuf=G_local, recvbuf=(G_global, G_sendcounts, G_displacements, MPI.DOUBLE))
             # each process also has to communicate which indices it collected for its local block
             for k in range(K):
                 indices_collected_by_this_process = np.array(self._G_propensity_ids[k], dtype=np.int32)
@@ -526,12 +539,15 @@ class ChemicalMasterEquation(SimulatorBase):
                 self.comm.Allgatherv(sendbuf=indices_collected_by_this_process,
                                      recvbuf=(recvbuf, propensity_id_sendcounts, propensity_id_displacements, MPI.INT))
                 self._G_propensity_ids[k] = [tuple(index) for index in recvbuf.tolist()]
-
-        for i in range(M):
-            # fix the diagonal to be the negative sum of the column
-            G[i, i] = -np.sum(G[:, i])
-
-        self._generator_matrix = G
+            for i in range(M):
+                # fix the diagonal to be the negative sum of the column
+                G_global[i, i] = -np.sum(G_global[:, i])
+            self._generator_matrix = G_global
+        else:
+            for i in range(M):
+                # fix the diagonal to be the negative sum of the column
+                G_local[i, i] = -np.sum(G_local[:, i])
+            self._generator_matrix = G_local
 
     def get_readable_G(self):
         """creates a readable generator matrix with string names"""
@@ -574,7 +590,7 @@ class ChemicalMasterEquation(SimulatorBase):
             self._generator_matrix[m,m] = 0
             self._generator_matrix[m,m] = -np.sum(self._generator_matrix[:, m])
 
-    def run(self, start, stop, step, overwrite=False):
+    def run(self, start, stop, step, run_name=None, overwrite=False):
         """Runs the chemical master equation simulation.
 
         Parameters
@@ -582,12 +598,17 @@ class ChemicalMasterEquation(SimulatorBase):
         start : int or float
         stop  : int or float
         step  : int or float
+        run_name : str
+        overwrite : bool
 
         """
 
         if self._results is not None and not overwrite:
             raise ValueError("Data from previous run found in `self.P_trajectory`. "
                              "To write over this data, set the `overwrite=True`")
+        if self._file:
+            self._run_name = 'run_' + str(len(self._file[self._system_name])) if run_name is None else run_name
+
         self._dt = step
         # using np.round to avoid floating point precision errors
         n_timesteps = int(np.round((stop - start) / self._dt))
@@ -628,321 +649,3 @@ class ChemicalMasterEquation(SimulatorBase):
     @P_trajectory.setter
     def P_trajectory(self, value):
         self._results = value
-
-    def calculate_mutual_information(self, X, Y, timestep='all', base=2, run_name=None):
-        """Calculates the mutual information."""
-
-        log = math.log2 if base == 2 else math.log
-
-        if timestep != 'all':
-            raise ValueError("other timestep values not implemented yet..")
-        try:
-            n_timesteps = len(self.P_trajectory)
-        except TypeError:
-            raise ValueError('No data found in `self.P_trajectory`.')
-
-        if isinstance(X, str):
-            X = [X]
-        if isinstance(Y, str):
-            Y = [Y]
-        X = sorted(X)
-        Y = sorted(Y)
-        if X+Y != sorted(X+Y):
-            X, Y = Y, X
-
-        x_map = self._get_point_mappings(X)
-        y_map = self._get_point_mappings(Y)
-        xy_map = self._get_point_mappings(X + Y)
-
-        if self.parallel:
-            start, stop = slice_tasks_for_parallel_workers(n_tasks=n_timesteps, n_workers=self.size, rank=self.rank)
-            local_blocksize = stop - start
-            mutual_information_local = np.empty(shape=local_blocksize, dtype=np.float64)
-            mutual_information_global = np.empty(shape=n_timesteps, dtype=np.float64)
-        else:
-            start, stop = 0, n_timesteps
-            local_blocksize = stop - start
-            mutual_information_local = mutual_information_global = np.empty(shape=local_blocksize, dtype=np.float64)
-
-        with timeit() as calculation_block:
-            for i, ts in enumerate(ProgressBar(range(start,stop), position=self.rank,
-                                               desc=f'rank {self.rank} calculating mutual information.')):
-                P = self.P_trajectory[ts]
-                mutual_information = 0
-                for x_point in x_map:
-                    for y_point in y_map:
-                        xy_point = x_point + y_point
-                        if xy_point not in xy_map:
-                            # skip cases where the concatenated coordinate tuples
-                            # were never in the joint distribution to begin with
-                            continue
-                        idx = x_map[x_point]
-                        idy = y_map[y_point]
-                        idxy = xy_map[xy_point]
-                        p_xy = np.sum(P[idxy])
-                        if p_xy == 0:
-                            # add zero to the sum if p_xy is 0
-                            # need to do this because 0*np.log(0) returns an error
-                            continue
-                        p_x = np.sum(P[idx])
-                        p_y = np.sum(P[idy])
-                        this_term = p_xy * math.log(p_xy / (p_x * p_y), base)
-                        mutual_information += this_term
-                mutual_information_local[i] = mutual_information
-        self.timings['t_calculate_mutual_information'] = calculation_block.elapsed
-
-        if self.parallel:
-            sendcounts = self.comm.allgather(local_blocksize)
-            displacements = self.comm.allgather(start)
-            self.comm.Allgatherv(sendbuf=mutual_information_local,
-                                 recvbuf=(mutual_information_global, sendcounts, displacements, MPI.DOUBLE))
-        if self._file:
-            HDF5_group = self._file[self._system_name]
-            run_name = 'run_' + str(len(self._file[self._system_name])) if run_name is None else run_name
-            mi_dataset = HDF5_group.create_dataset(f'{run_name}/mutual_information', data=mutual_information_global)
-            mi_dataset.attrs['rates'] = [rate[1] for rate in self._rates]
-            mi_dataset.attrs['dt'] = self._dt
-
-        return mutual_information_global
-
-    def calculate_instantaneous_mutual_information(self, X, Y, timestep='all', base=2, run_name=None):
-
-        log = math.log2 if base == 2 else math.log
-
-        if timestep != 'all':
-            raise ValueError("other timestep values not implemented yet..")
-        try:
-            n_timesteps = len(self.P_trajectory)
-        except TypeError:
-            raise ValueError('No data found in `self.P_trajectory`.')
-
-        if isinstance(X, str):
-            X = [X]
-        if isinstance(Y, str):
-            Y = [Y]
-        X = sorted(X)
-        Y = sorted(Y)
-        if X + Y != sorted(X + Y):
-            X, Y = Y, X
-
-        Deltas_x = self._get_Delta_vectors(X)
-        Deltas_y = self._get_Delta_vectors(Y)
-        Deltas_xy = self._get_Delta_vectors(X + Y)
-
-        if self.parallel:
-            start, stop = slice_tasks_for_parallel_workers(n_tasks=n_timesteps, n_workers=self.size, rank=self.rank)
-            local_blocksize = stop - start
-            mutual_information_local = np.empty(shape=local_blocksize, dtype=np.float64)
-            mutual_information_global = np.empty(shape=n_timesteps, dtype=np.float64)
-        else:
-            start, stop = 0, n_timesteps
-            local_blocksize = stop - start
-            mutual_information_local = mutual_information_global = np.empty(shape=local_blocksize, dtype=np.float64)
-
-        with timeit() as calculation_block:
-            for i, ts in enumerate(ProgressBar(range(start, stop), position=self.rank,
-                                               desc=f'rank {self.rank} calculating mutual information.')):
-                P = self.P_trajectory[ts]
-                mutual_information = 0
-                for x, Dx in Deltas_x.items():
-                    for y, Dy in Deltas_y.items():
-                        xy = x + y
-                        if xy not in Deltas_xy:
-                            # skip cases where the concatenated coordinate tuples
-                            # were never in the joint distribution to begin with
-                            continue
-                        Dxy = Deltas_xy[xy]
-                        p_xy = np.dot(P, Dxy)
-                        if p_xy == 0:
-                            # add zero to the sum if p_xy is 0
-                            # need to do this because 0*np.log(0) returns an error
-                            continue
-                        p_x = np.dot(P, Dx)
-                        p_y = np.dot(P, Dy)
-                        this_term = p_xy * log(p_xy / (p_x * p_y))
-                        mutual_information += this_term
-
-                mutual_information_local[i] = mutual_information
-        self.timings['t_calculate_mutual_information'] = calculation_block.elapsed
-
-        if self.parallel:
-            sendcounts = self.comm.allgather(local_blocksize)
-            displacements = self.comm.allgather(start)
-            self.comm.Allgatherv(sendbuf=mutual_information_local,
-                                 recvbuf=(mutual_information_global, sendcounts, displacements, MPI.DOUBLE))
-        if self._file:
-            HDF5_group = self._file[self._system_name]
-            run_name = 'run_' + str(len(HDF5_group)) if run_name is None else run_name
-            mi_dataset = HDF5_group.create_dataset(f'{run_name}/mutual_information', data=mutual_information_global)
-            mi_dataset.attrs['rates'] = [rate[1] for rate in self._rates]
-            mi_dataset.attrs['dt'] = self._dt
-
-        return mutual_information_global
-
-    def calculate_marginal_probability_evolution(self, molecules):
-        """"""
-
-        if self.P_trajectory is None:
-            raise ValueError('No data found in self.results attribute.')
-        point_maps = self._get_point_mappings(molecules)
-        distribution: Dict[tuple, np.ndarray] = {}
-        for point, map in point_maps.items():
-            distribution[point] = np.array([ np.sum(self.P_trajectory[ts][map]) for ts in range(len(self.P_trajectory)) ])
-
-        return distribution
-
-    def calculate_average_population(self, species):
-        """"""
-
-        average_population = np.empty(shape=len(self.P_trajectory), dtype=np.float64)
-        if self.P_trajectory is None:
-            raise ValueError('No data found in self.results attribute.')
-        P = self.P_trajectory
-        point_maps = self._get_point_mappings(species)
-        for ts in range(len(self.P_trajectory)):
-            total = 0
-            for point, map in point_maps.items():
-                assert len(point) == 1
-                count = point[0]
-                count_term = np.sum( count*self.P_trajectory[ts][map] )
-                total += count_term
-
-            average_population[ts] = total
-
-        return average_population
-
-    def _get_Delta_vectors(self, molecules):
-
-        if isinstance(molecules, str):
-            molecules = [molecules]
-        # indices that correspond to the selected molecular species in the ordered species list
-        ids = [self.species.index(n) for n in molecules]
-        truncated_points = np.array(self.states)[:, ids]
-
-        Delta_vectors: Dict[tuple, np.ndarray] = {}
-
-        curr_state_id = 0
-        states_accounted_for: List[int] = []
-        # begin mapping points until every state in the microstate space is accounted for
-        while len(states_accounted_for) < len(truncated_points):
-            # find the indices of degenerate domain points starting with the first state
-            # and skipping iterations if that point has been accounted for
-            if curr_state_id in states_accounted_for:
-                curr_state_id += 1
-                continue
-            curr_state = truncated_points[curr_state_id]
-            Dv = np.all(truncated_points == curr_state, axis=1).astype(np.float64)
-            Delta_vectors[tuple(curr_state)] = Dv
-            # keep track of which states we have accounted for
-            states_accounted_for += np.argwhere(Dv == 1).transpose().tolist()
-            curr_state_id += 1
-
-        return Delta_vectors
-
-    def _get_point_mappings(self, molecules):
-        """Maps the indices of the microstates in the `system.states` vector to their
-        marginal probability distribution domain points for the specified molecular species.
-
-        e.g. find where each (x,y,z) point in p(x,y,z) maps in p(x) if the set of (x,y,z) points were
-        flattened into a 1-d array.
-
-        """
-
-        if isinstance(molecules, str):
-            molecules = [molecules]
-        # indices that correspond to the selected molecular species in the ordered species list
-        ids = [self.species.index(n) for n in sorted(molecules)]
-        truncated_points = np.array(self.states)[:, ids]
-
-        # keys are tuple coordinates of the marginal distrubtion
-        # values are the indices of the joint distribution points that map to the marginal point
-        point_maps: Dict[tuple, List[int]] = {}
-
-        curr_state_id = 0
-        states_accounted_for: List[int] = []
-        # begin mapping points until every state in the microstate space is accounted for
-        while len(states_accounted_for) < len(truncated_points):
-            # find the indices of degenerate domain points starting with the first state
-            # and skipping iterations if that point has been accounted for
-            if curr_state_id in states_accounted_for:
-                curr_state_id += 1
-                continue
-            curr_state = truncated_points[curr_state_id]
-            degenerate_ids = np.argwhere(
-                np.all(truncated_points == curr_state, axis=1)).transpose().flatten().tolist()
-            point_maps[tuple(curr_state)] = degenerate_ids
-            # keep track of which states we have accounted for
-            states_accounted_for += degenerate_ids
-            curr_state_id += 1
-
-        return point_maps
-
-    def _calculate_matrix_element(self, i, j):
-        """"""
-
-        Pi = self.P_trajectory[i]
-        Pj = self.P_trajectory[j]
-        # time gap between i and j
-        dt = abs(j - i) * self._dt
-        # propagator for this dt
-        Q = expm(self.G * dt)
-
-
-
-    """def calculate_mutual_information_matrix(self, X, Y):
-        Calculates the mutual information between every pair of timepoints
-
-        n_timesteps = len(self.P)
-        dts = [self._dt*timestep for timestep in range(n_timesteps)]
-        dts_matrix = np.zeros(shape=(len(dts), len(dts)))
-        for i, dt in enumerate(dts):
-            np.fill_diagonal(dts_matrix[:-i, i:], dt)  # upper triangle
-            np.fill_diagonal(dts_matrix[i:, :-i], dt)  # lower triangle
-
-        MI_matrix = np.empty(shape=(len(dts), len(dts)), dtype=float)
-
-        x_map = self._get_point_mappings(X)
-        y_map = self._get_point_mappings(Y)
-        xy_map = self._get_point_mappings(X + Y)
-
-        Q_dict = {}
-        for dt in dts:
-            Q_dict[dt] = expm(self.G * dt)
-
-        def calc_matrix_element(i, j):
-            #print(f'\n\ndoing i = {i}, j = {j}')
-            # p(n_A, n_B, n_C) at t=i
-            P_i = self.P[i]
-            # p(n_A, n_B, n_C) at t=j
-            P_j = self.P[j]
-            dt = dts_matrix[i, j]
-            Q = Q_dict[dt]
-
-            MI = 0
-            for x_indices in x_map.values():
-                for y_indices in y_map.values():
-                    p_x = np.sum(P_i[x_indices])
-                    p_y = np.sum(P_j[y_indices])
-                    if i > j:
-                        Qtilde = np.sum([Q[i, j] * P_j[j] for i in x_indices for j in y_indices])
-                    elif i < j:
-                        Qtilde = np.sum([Q[j, i] * P_i[i] for i in x_indices for j in y_indices])
-                    if Qtilde == 0:
-                        term = 0
-                    else:
-                        term = Qtilde * np.log(Qtilde / (p_x * p_y))
-                    MI += term
-                    #print(f'x point: {x_indices}\ny point: {y_indices}\nterm = {term}\n')
-            return MI
-
-        with timeit() as calculation_block:
-
-            for i in ProgressBar(range(len(MI_matrix))):
-                for j in range(len(MI_matrix)):
-                    if i != j:
-                        MI_matrix[i, j] = calc_matrix_element(i, j)
-
-            main_diagonal = self.calculate_mutual_information(X, Y)
-            np.fill_diagonal(MI_matrix, main_diagonal)
-
-        return MI_matrix"""

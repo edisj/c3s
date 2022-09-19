@@ -9,4 +9,4 @@ __version__ = versions['version']
 __git_revision__ = versions['full-revisionid']
 del get_versions, versions
 
-__all__ = ['CME', 'Gillespie']
+__all__ = ['ChemicalMasterEquation', 'Gillespie']

@@ -11,4 +11,3 @@ reactions:
   B + P  -> BP:     [k_BP+,  50]
   BP     -> B + P:  [k_BP-,  50]
   P      -> 0:      [d_P,     1]
-  0      -> S:      [b_S,   200]

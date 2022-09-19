@@ -1,10 +1,9 @@
 import numpy as np
 import time
 from tqdm.auto import tqdm
-from typing import Tuple
 
 
-class timeit(object):
+class timeit:
     """Measures the time elapsed during the execution of a block of code.
 
     :class:`timeit` is meant to be used as a context manager where you wrap a section of code with a
@@ -21,15 +20,18 @@ class timeit(object):
         self.elapsed = end_time - self._start_time
         return False
 
-
-def slice_tasks_for_parallel_workers(n_tasks, n_workers, rank):
+def split_tasks_for_workers(N_tasks, N_workers, rank):
     """Makes approximately even sized slices for some set of parallel workers
     to use as indices for their local block of work."""
 
+    if N_workers is None or N_workers == 1:
+        start, stop, blocksize = 0, N_tasks, N_tasks
+        return start, stop, blocksize
+
     # begin by making evenly sized block with the remainder truncated
-    blocksizes = np.ones(n_workers, dtype=np.int64) * n_tasks // n_workers
+    blocksizes = np.ones(N_workers, dtype=np.int64) * N_tasks // N_workers
     # sprinkle the remainder over the workers
-    remainders = (np.arange(n_workers, dtype=np.int64) < n_tasks % n_workers)
+    remainders = (np.arange(N_workers, dtype=np.int64) < N_tasks % N_workers)
     blocksizes += remainders
     # the boundaries of the slices
     ids = np.cumsum(np.concatenate(([0], blocksizes)))
@@ -37,8 +39,10 @@ def slice_tasks_for_parallel_workers(n_tasks, n_workers, rank):
     slices = [slice(start, stop, 1) for start, stop in zip(ids[:-1], ids[1:])]
     start = slices[rank].start
     stop = slices[rank].stop
+    blocksize = stop - start
+    print(start, stop, blocksize)
 
-    return start, stop
+    return start, stop, blocksize
 
 def latexify_string(string):
     """helper function to prepare strings for raw string format
