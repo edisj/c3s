@@ -4,6 +4,8 @@ import seaborn as sns
 from typing import List
 
 
+"""these functions don't work anymore. Just holding on to them for potential future use."""
+
 class PlottingMixin:
 
     def plot_probability_evolution(self, molecules: List[str], data=None, save=None):
