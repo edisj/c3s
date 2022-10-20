@@ -7,14 +7,8 @@ import numpy as np
 from typing import List, Dict
 from collections import namedtuple
 from scipy.sparse.linalg import expm
-try:
-    from mpi4py import MPI
-except ImportError:
-    MPI_ON = False
-else:
-    MPI_ON = True
 from .calculations import CalculationsMixin
-from .utils import timeit, ProgressBar, split_tasks_for_workers
+from .utils import timeit, ProgressBar
 
 
 class SimulatorBase:
@@ -22,8 +16,8 @@ class SimulatorBase:
 
     np.seterr(under='raise', over='raise')
 
-    def __init__(self, cfg, filename=None, mode='x', system_name=None,
-                 initial_state=None, initial_populations=None, max_populations=None, empty=False):
+    def __init__(self, cfg,
+                 initial_state=None, initial_populations=None, max_populations=None):
         """Reads a yaml config file that specifies the chemical reactions and kinetic rates for the chemical system
         and sets important attributes.
 
@@ -31,36 +25,22 @@ class SimulatorBase:
         ----------
         cfg : str
             Path to yaml config file that specifies chemical reactions and kinetic rates
-        filename : str
-        mode : str, default='x'
-        system_name : str
         initial_state : list of int or array_like
         initial_populations : dict, default=None
             The initial population a particular species. If a species population is
             not specified, it's initial population is taken to be 0.
         max_populations : dict
-        empty : bool
 
         """
 
         self._config_path = cfg
         self._config_dictionary = None
-        self._file = None
         self._initial_populations = initial_populations
         self._initial_state = initial_state
         if self._initial_state and self._initial_populations:
             raise ValueError("Do not specify both the `initial_state` and `initial_populations` parameters. "
                              "Use one or the other.")
         self._max_populations = max_populations
-        self._empty = empty
-        # set up the MPI communicator and assign rank ids to each process
-        if MPI_ON:
-            self.comm = MPI.COMM_WORLD
-            self.size = self.comm.Get_size()
-            self.rank = self.comm.Get_rank()
-        else:
-            self.comm, self.size, self.rank = None, None, None
-        self.parallel = MPI_ON and self.size > 1
         self._reactants = None
         self._products = None
         self._rates = None
@@ -80,25 +60,6 @@ class SimulatorBase:
             self._set_species_vector()
             self._set_initial_state()
             self._set_reaction_matrix_and_propensity_indices()
-        # open filestream handle under `self._file` if a `filename` was provided as parameter
-        if filename:
-            if system_name is None:
-                # default system name uses initial species counts
-                self._system_name = ''
-                for species, count in self._initial_populations.items():
-                    self._system_name += f'{count}{species}'
-            self._open_HDF5_file(filename, mode)
-            self._create_HDF5_group(self._system_name)
-
-    def _open_HDF5_file(self, filename, mode):
-        """"""
-        if self.parallel:
-            self._file = h5py.File(filename, mode=mode, driver='mpio', comm=self.comm)
-        else:
-            self._file = h5py.File(filename, mode=mode)
-
-    def _create_HDF5_group(self, name):
-        return self._file.require_group(name)
 
     def _set_rates(self):
         """create `self.rates` which is len(K) List[List[str, int]] where k'th element gives
@@ -124,12 +85,8 @@ class SimulatorBase:
         species: List[str] = []
         for k, (reactants, products) in enumerate(zip(self._reactants, self._products)):
             # len(reactants) is not necessarily = len(products) so we have to loop over each
+            # TODO: need to add check and warning for birth process without max_popoulations
             for molecule in reactants:
-                #if molecule == '0':
-                #    if not self._max_populations:
-                #        raise ValueError()
-                #    birth_molecule = reactants[k]
-                #    if birth_mo
                 species.append(molecule)
             for molecule in products:
                 species.append(molecule)
@@ -153,6 +110,11 @@ class SimulatorBase:
             if species not in self._species:
                 raise KeyError(f'{species} is not a valid species. It must be in one of the '
                                f'chemical reactions specified in the config file.')
+        if self._max_populations:
+            for species in self._max_populations.keys():
+                if species not in self._species:
+                    raise KeyError(f'{species} is not a valid species. It must be in one of the '
+                                   f'chemical reactions specified in the config file.')
 
         initial_state = [self._initial_populations[species]
                          if species in self._initial_populations else 0
@@ -172,12 +134,12 @@ class SimulatorBase:
         N_species = len(self._species)
         reaction_matrix = np.zeros(shape=(N_reactions, N_species), dtype=np.int32)
         for reaction, reactants, products in zip(reaction_matrix, self._reactants, self._products):
-            for i, species in enumerate(self._species):
+            for n, species in enumerate(self._species):
                 # if this species in both a product and reactant, net effect is 0
                 if species in reactants:
-                    reaction[i] += -1
+                    reaction[n] += -1
                 if species in products:
-                    reaction[i] += 1
+                    reaction[n] += 1
 
         self._reaction_matrix = reaction_matrix
         self._propensity_indices = [[n for n in range(N_species) if reaction_matrix[k,n] < 0]
@@ -222,8 +184,8 @@ class SimulatorBase:
     def reaction_matrix(self, value):
         self._reaction_matrix = value
     @property
-    def rates(self) -> np.ndarray:
-        return self._rates
+    def rates(self):
+        return dict(self._rates)
     @rates.setter
     def rates(self, value):
         self._rates = value
@@ -312,7 +274,7 @@ class Gillespie(SimulatorBase):
                 raise KeyError(f'{new_rate_string} is not a valid rate for this system. The new rate'
                                f'must be one of the rates specified in the original config file.')
 
-    def run(self, N_timesteps, overwrite=False):
+    def run(self, N_timesteps, run_name=None, overwrite=False):
         """Runs the stochastic simulation algorithm.
 
         Parameters
@@ -328,25 +290,26 @@ class Gillespie(SimulatorBase):
 
         N_species = len(self._species)
         # let's use a named tuple because it's very Pythonic...
-        Trajectory = namedtuple("Trajectory", ["states", "holding_times"])
+        Trajectory = namedtuple("Trajectory", ["states", "times"])
         sequence_of_states = np.empty(shape=(N_timesteps, N_species), dtype=np.int32)
-        holding_times = np.empty(shape=N_timesteps-1, dtype=np.float64)
-        trajectory = Trajectory(sequence_of_states, holding_times)
+        times = np.empty(shape=N_timesteps, dtype=np.float64)
+        trajectory = Trajectory(sequence_of_states, times)
 
+        currTime = 0
         currState = np.array(self._initial_state, dtype=np.int32)
-        sequence_of_states[0] = currState
-        for ts in range(N_timesteps - 1):
+        for ts in range(N_timesteps):
+            trajectory.states[ts] = currState
             propensity_vector = self._get_propensity_vector(currState)
-            nextState = self._get_next_state(currState, propensity_vector)
             holding_time = self._sample_holding_time(propensity_vector)
-            trajectory.states[ts+1] = nextState
-            trajectory.holding_times[ts] = holding_time
+            nextState = self._get_next_state(currState, propensity_vector)
+            currTime += holding_time
+            trajectory.times[ts] = currTime
             # set current state to the new state and proceed along the journey
             currState = nextState
 
         self._results = trajectory
 
-    def run_many_iterations(self, N_iterations, N_timesteps):
+    def run_many_iterations(self, N_iterations, N_timesteps, run_name=None):
         """
 
         Parameters
@@ -357,30 +320,24 @@ class Gillespie(SimulatorBase):
         """
 
         N_species = len(self._species)
-        start, stop = split_tasks_for_workers(N_tasks=N_iterations, N_workers=self.size, rank=self.rank)
-        local_blocksize = stop - start
-        trajectories = np.empty(shape=(local_blocksize, N_timesteps, N_species), dtype=np.int32)
-        holding_times = np.empty(shape=(local_blocksize, N_timesteps - 1), dtype=np.float64)
+        trajectories = np.empty(shape=(N_iterations, N_timesteps, N_species), dtype=np.int32)
+        times = np.empty(shape=(N_iterations, N_timesteps), dtype=np.float64)
 
-        for ts in range(start, stop):
-            self.run(N_timesteps, overwrite=True)
-            trajectories[ts] = self.trajectory.states
-            holding_times[ts] = self.trajectory.holding_times
+        for i in range(N_iterations):
+            self.run(N_timesteps, run_name=run_name, overwrite=True)
+            trajectories[i] = self.trajectory.states
+            times[i] = self.trajectory.times
 
-        if self.parallel:
-            trajectories_global = np.empty(shape=(N_iterations, N_timesteps, N_species), dtype=np.int32)
-            traj_sendcounts = self.comm.allgather(trajectories.size)
-            traj_displacements = self.comm.allgather(self.rank * trajectories.size)
-            self.comm.Allgatherv(
-                sendbuf=trajectories, recvbuf=(trajectories_global, traj_sendcounts, traj_displacements, MPI.INT))
-            holding_times_global = np.empty(shape=(N_iterations, N_timesteps - 1), dtype=np.float64)
-            h_sendcounts = self.comm.allgather(holding_times.size)
-            h_displacements = self.comm.allgather(self.rank * holding_times.size)
-            self.comm.Allgatherv(
-                sendbuf=holding_times, recvbuf=(holding_times_global, h_sendcounts, h_displacements, MPI.DOUBLE))
-            self._results = (trajectories_global, holding_times_global)
-        else:
-            self._results = (trajectories, holding_times)
+        self._results = (trajectories, times)
+
+    '''def _write_to_file(self):
+        this_run_group = self._system_file.create_group(self._run_name)
+        trajectory_dset = this_run_group.create_dataset('trajectories', shape=self._results[0].shape, dtype=self._results[0].dtype)
+        trajectory_dset.attrs['rates'] = [rate[1] for rate in self._rates]
+        holding_times_dset = this_run_group.create_dataset('times', shape=self._results[1].shape, dtype=self._results[1].dtype)
+
+        trajectory_dset[:] = self._results[0]
+        holding_times_dset[:] = self._results[1]'''
 
     @property
     def trajectory(self):
@@ -399,8 +356,8 @@ class Gillespie(SimulatorBase):
 class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
     """Simulator class of the Chemical Master Equationn (CME)."""
 
-    def __init__(self, cfg=None, filename=None, mode='x', system_name=None,
-                 initial_state=None, initial_populations=None, max_populations=None, empty=False):
+    def __init__(self, cfg=None, file_name=None, system_name=None,
+                 initial_state=None, initial_populations=None, max_populations=None):
         """Uses the Chemical Master Equation to propagate the time
            evolution of the probability dynamics of a chemical system.
 
@@ -425,36 +382,45 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
         empty : bool
 
         """
-        super(ChemicalMasterEquation, self).__init__(cfg=cfg, filename=filename, mode=mode, system_name=system_name,
-                                                     initial_state=initial_state, initial_populations=initial_populations,
-                                                     max_populations=max_populations, empty=empty)
+        super(ChemicalMasterEquation, self).__init__(cfg=cfg,
+                                                     initial_state=initial_state,
+                                                     initial_populations=initial_populations,
+                                                     max_populations=max_populations)
+        self._system_name = system_name
         self._constitutive_states = None
-        self._generator_matrix= None
+        self._generator_matrix = None
+        self._max_populations = max_populations
 
-        if not empty:
+        if file_name is None:
             with timeit() as set_constitutive_states:
                 self._set_constitutive_states()
             with timeit() as set_generator_matrix:
                 self._set_generator_matrix()
             self.timings['t_set_constitutive_states'] = set_constitutive_states.elapsed
             self.timings['t_set_generator_matrix'] = set_generator_matrix.elapsed
-
-            if self._file:
-                self._file[self._system_name].attrs['M'] = len(self._constitutive_states)
+        else:
+            self._read_from_hdf5(file_name, self._system_name)
 
     def _set_constitutive_states(self):
         """Constructs all possible constitutive states from the intial state."""
 
         constitutive_states = [self._initial_state]
+        population_limits = [
+            (self._species.index(species), max_count)
+            for species, max_count in self._max_populations.items()
+        ] if self._max_populations else False
+
+        self._G_ids = {k: [] for k in range(len(self._reaction_matrix))}
 
         # newly_added keeps track of the most recently accepted states
         newly_added_states = [np.array(self._initial_state)]
         while True:
             accepted_candidate_states = []
             for state in newly_added_states:
+                i = int(np.argwhere(np.all(constitutive_states == state, axis=1)))
                 # the idea here is that for each of the recently added states,
                 # we iterate through each reaction to see if a transition is possible
-                for reaction in self._reaction_matrix:
+                for k, reaction in enumerate(self._reaction_matrix):
                     # gives a boolean array for which reactants are required
                     reactants_required = np.argwhere(reaction < 0).T
                     reactants_available = state > 0
@@ -463,9 +429,17 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
                         # apply the reaction and add the new state into our list of constitutive
                         # states only if it is a new state that has not been previously visited
                         new_candidate_state = state + reaction
-                        if list(new_candidate_state) not in constitutive_states:
-                            accepted_candidate_states.append(new_candidate_state)
-                            constitutive_states.append(list(new_candidate_state))
+                        is_actually_new_state = list(new_candidate_state) not in constitutive_states
+                        does_not_exceed_max_population = all([new_candidate_state[i] <= max_count for i, max_count
+                                                              in population_limits]) if population_limits else True
+                        if does_not_exceed_max_population:
+                            if is_actually_new_state:
+                                j = len(constitutive_states)
+                                accepted_candidate_states.append(new_candidate_state)
+                                constitutive_states.append(list(new_candidate_state))
+                            else:
+                                j = int(np.argwhere(np.all(constitutive_states == new_candidate_state, axis=1)))
+                            self._G_ids[k].append((j,i))
             # replace the old set of new states with these ones
             newly_added_states = accepted_candidate_states
             # once we reach the point where no new states are accessible we terminate
@@ -473,6 +447,35 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
                 break
 
         self._constitutive_states = np.array(constitutive_states, dtype=np.int32)
+
+    def _set_generator_matrix(self):
+        """Constructs the generator matrix.
+
+        The generator matrix is an MxM matrix where M is the total number of states given
+        by `len(self.constitutive_states)`.
+
+        """
+
+        M = len(self._constitutive_states)
+        K = len(self._reaction_matrix)
+        G = np.zeros(shape=(M, M), dtype=np.float64)
+        for k, value in ProgressBar(self._G_ids.items()):
+            for idx in value:
+                i,j = idx
+                # the indices of the species involved in the reaction
+                n_ids = self._propensity_indices[k]
+                # h is the combinatorial factor for number of reactions attempting to fire
+                # At the moment this assumes maximum stoichiometric coefficient of 1
+                state_j = self._constitutive_states[j]
+                h = np.prod([state_j[n] for n in n_ids])
+                # lambda_ is the elementary reaction rate for the k'th reaction
+                lambda_ = self._rates[k][1]
+                reaction_propensity = h * lambda_
+                G[i,j] = reaction_propensity
+        for i in range(M):
+            # fix the diagonal to be the negative sum of the column
+            G[i,i] = -np.sum(G[:,i])
+        self._generator_matrix = G
 
     def get_readable_states(self):
         """creates a convenient human readable list of the constitutive states"""
@@ -486,69 +489,6 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
 
         return constitutive_states_strings
 
-    def _set_generator_matrix(self):
-        """Constructs the generator matrix.
-
-        The generator matrix is an MxM matrix where M is the total number of states given
-        by `len(self.constitutive_states)`.
-
-        """
-
-        M = len(self._constitutive_states)
-        K = len(self._reaction_matrix)
-        start, stop, blocksize = split_tasks_for_workers(N_tasks=M, N_workers=self.size, rank=self.rank)
-        G_local = np.zeros(shape=(blocksize, M), dtype=np.float64)
-
-        self._G_propensity_ids = {k: [] for k in range(K)}
-
-        # local_i = global_i in the serial case
-        for local_i, global_i in enumerate(ProgressBar(range(start, stop),
-                                                       position=self.rank,
-                                                       desc=f'rank {self.rank} working on generator matrix...')):
-            # G_ij = propensity j -> i, so we are looking for any j state that can transition to i
-            state_i = self._constitutive_states[global_i]
-            for j in range(M):
-                if global_i != j:
-                    state_j = self._constitutive_states[j]
-                    for k, reaction in enumerate(self._reaction_matrix):
-                        # k'th reaction selected if a reaction exists
-                        if np.array_equal(state_j + reaction, state_i):
-                            # the indices of the species involved in the reaction
-                            n_ids = self._propensity_indices[k]
-                            # h is the combinatorial factor for number of reactions attempting to fire
-                            # At the moment this assumes maximum stoichiometric coefficient of 1
-                            h = np.prod([state_j[n] for n in n_ids])
-                            # lambda_ is the elementary reaction rate for the k'th reaction
-                            lambda_ = self._rates[k][1]
-                            reaction_propensity = h*lambda_
-                            G_local[local_i][j] = reaction_propensity
-                            self._G_propensity_ids[k].append((global_i, j))
-                            break
-
-        if self.parallel:
-            G_global = np.zeros(shape=(M,M), dtype=np.float64)
-            G_sendcounts = self.comm.allgather(M * blocksize)
-            G_displacements = self.comm.allgather(M * start)
-            self.comm.Allgatherv(sendbuf=G_local, recvbuf=(G_global, G_sendcounts, G_displacements, MPI.DOUBLE))
-            # each process also has to communicate which indices it collected for its local block
-            for k in range(K):
-                indices_collected_by_this_process = np.array(self._G_propensity_ids[k], dtype=np.int32)
-                propensity_id_sendcounts = self.comm.allgather(indices_collected_by_this_process.size)
-                propensity_id_displacements = [count-2 for count in propensity_id_sendcounts]
-                recvbuf = np.zeros(shape=(int(sum(propensity_id_sendcounts)/2), 2), dtype=np.int32)
-                self.comm.Allgatherv(sendbuf=indices_collected_by_this_process,
-                                     recvbuf=(recvbuf, propensity_id_sendcounts, propensity_id_displacements, MPI.INT))
-                self._G_propensity_ids[k] = [tuple(index) for index in recvbuf.tolist()]
-            for i in range(M):
-                # fix the diagonal to be the negative sum of the column
-                G_global[i, i] = -np.sum(G_global[:, i])
-            self._generator_matrix = G_global
-        else:
-            for i in range(M):
-                # fix the diagonal to be the negative sum of the column
-                G_local[i, i] = -np.sum(G_local[:, i])
-            self._generator_matrix = G_local
-
     def get_readable_G(self):
         """creates a readable generator matrix with string names"""
 
@@ -556,7 +496,7 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
         readable_G = [['0' for _ in range(M)] for _ in range(M)]
         propensity_strings = self.get_propensity_strings()
         for k in range(len(self.reaction_matrix)):
-            for idx in self._G_propensity_ids[k]:
+            for idx in self._G_ids[k]:
                 i,j = idx
                 readable_G[i][j] = propensity_strings[k]
         for j in range(M):
@@ -574,13 +514,17 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
         for new_rate_string, new_rate_value in new_rates.items():
             for k, old_rate in enumerate(self._rates):
                 if old_rate[0] == new_rate_string:
-                    propensity_adjustment_factor = new_rate_value / old_rate[1]
+                    if old_rate[1] == new_rate_value:
+                        propensity_adjustment_factor = 1
+                    else:
+                        propensity_adjustment_factor = new_rate_value / old_rate[1]
                     # make sure to do this after saving the propensity factor
                     self._rates[k][1] = new_rate_value
                     # the generator matrix also changes when the rates change
-                    G_elements_affected = self._G_propensity_ids[k]
+                    G_elements_affected = self._G_ids[k]
                     for idx in G_elements_affected:
-                        self._generator_matrix[idx] = self._generator_matrix[idx] * propensity_adjustment_factor
+                        i = tuple(idx)
+                        self._generator_matrix[i] = self._generator_matrix[i] * propensity_adjustment_factor
                     break
             else:
                 raise KeyError(f'{new_rate_string} is not a valid rate for this system. The new rate'
@@ -590,7 +534,7 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
             self._generator_matrix[m,m] = 0
             self._generator_matrix[m,m] = -np.sum(self._generator_matrix[:, m])
 
-    def run(self, start, stop, step, run_name=None, overwrite=False):
+    def run(self, start, stop, step, run_name=None, continued=False, overwrite=False):
         """Runs the chemical master equation simulation.
 
         Parameters
@@ -606,8 +550,6 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
         if self._results is not None and not overwrite:
             raise ValueError("Data from previous run found in `self.P_trajectory`. "
                              "To write over this data, set the `overwrite=True`")
-        if self._file:
-            self._run_name = 'run_' + str(len(self._file[self._system_name])) if run_name is None else run_name
 
         self._dt = step
         # using np.round to avoid floating point precision errors
@@ -618,21 +560,57 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
         P_trajectory[0] = np.zeros(shape=M, dtype=np.float64)
         P_trajectory[0, 0] = 1
 
-        # only 1 process does this because naively parallelizing matrix*vector
-        # operation is very slow compared to numpy optimized speeds
-        if not self.parallel or self.rank == 0:
-            with timeit() as matrix_exponential:
-                Q = expm(self._generator_matrix * self._dt)
-            with timeit() as run_time:
-                for ts in ProgressBar(range(n_timesteps - 1), desc=f'rank {self.rank} running.'):
-                    P_trajectory[ts + 1] = Q.dot(P_trajectory[ts])
-            self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
-            self.timings['t_run'] = run_time.elapsed
-
-        if self.parallel:
-            self.comm.Bcast(P_trajectory, root=0)
+        with timeit() as matrix_exponential:
+            Q = expm(self._generator_matrix * self._dt)
+        with timeit() as run_time:
+            for ts in ProgressBar(range(n_timesteps - 1), desc=f'running...'):
+                P_trajectory[ts + 1] = Q.dot(P_trajectory[ts])
+        self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
+        self.timings['t_run'] = run_time.elapsed
 
         self._results = P_trajectory
+
+    def write_to_hdf5(self, file_name, system_name, run_name=None, states=False, G=False, P_trajectory=False, mut_inf=False):
+
+        with h5py.File(file_name, 'a') as root:
+            if len(root) == 0:
+                root.create_group(system_name)
+                if self._max_populations is not None:
+                    root[system_name].create_group('max_populations')
+                    for species, population in self._max_populations.items():
+                        root[f'{system_name}/max_populations'].attrs[species] = population
+            else:
+                root.require_group(system_name)
+            root[system_name].attrs['M'] = len(self._constitutive_states)
+
+            if states:
+                root[system_name].create_dataset('states', data=self._constitutive_states)
+            if run_name:
+                root[system_name].create_group(run_name)
+                root[f'{system_name}/{run_name}'].attrs['dt'] = self._dt
+                root[f'{system_name}/{run_name}'].create_group('rates')
+                for rate, value in self.rates.items():
+                    root[f'{system_name}/{run_name}/rates'].attrs[rate] = value
+
+            if G:
+                root[system_name].create_dataset('G', data=self._generator_matrix)
+                root[system_name].create_group('G_ids')
+                for key,value in self._G_ids.items():
+                    root[f'{system_name}/G_ids'].create_dataset(f'{key}', data=np.array(self._G_ids[key]))
+            if P_trajectory:
+                root[f'{system_name}/{run_name}'].create_dataset('P_trajectory', data=self._results)
+            if mut_inf:
+                root[f'{system_name}/{run_name}'].create_dataset('mut_inf', data=self._mutual_information)
+
+    def _read_from_hdf5(self, filename, system_name):
+
+        with h5py.File(filename, 'r') as file:
+            system_group = file.require_group(system_name)
+            self._constitutive_states = system_group['states'][()]
+            self._generator_matrix = system_group['G'][()]
+            self._G_ids = {}
+            for k in range(len(self._reaction_matrix)):
+                self._G_ids[k] = system_group[f'G_ids/{k}'][()].tolist()
 
     @property
     def states(self):

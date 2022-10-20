@@ -5,17 +5,10 @@ from collections import namedtuple
 from typing import List, Dict
 from scipy.sparse.linalg import expm
 from .utils import split_tasks_for_workers, ProgressBar, timeit
-from .simulators import MPI_ON
-if MPI_ON:
-    from mpi4py import MPI
 
 
 class CalculationsMixin:
-    _file: h5py.File
-    comm: MPI.COMM_WORLD
-    rank: int
-    size: int
-    parallel: bool
+    _system_file: h5py.File
     timings: dict
     _rates: List
     _system_name: str
@@ -56,6 +49,17 @@ class CalculationsMixin:
             mutual_information = calculate_mi_dispatch[version](Deltas, base)
         self.timings[f't_calculate_mi_{version}'] = calculation_block.elapsed
 
+        '''if self._system_file:
+            group = self._system_file[self._run_name]
+            mi_dataset = group.create_dataset('mutual_information',
+                                               shape=mutual_information.shape,
+                                               dtype=mutual_information.dtype)
+            mi_dataset.attrs['rates'] = [rate[1] for rate in self._rates]
+            mi_dataset.attrs['dt'] = self._dt
+            mi_dataset.attrs['logbase'] = base
+            mi_dataset[:] = mutual_information'''
+
+        self._mutual_information = mutual_information
         return mutual_information
 
     def _get_Delta_vectors(self, molecules):
@@ -89,11 +93,9 @@ class CalculationsMixin:
         """"""
 
         N_timesteps = len(self.P_trajectory)
-        start, stop, blocksize = split_tasks_for_workers(N_tasks=N_timesteps, N_workers=self.size, rank=self.rank)
-        local_mi = np.zeros(shape=blocksize, dtype=np.float64)
+        mut_inf = np.zeros(shape=N_timesteps, dtype=np.float64)
 
-        for i, ts in enumerate(ProgressBar(range(start, stop), position=self.rank,
-                                           desc=f'rank {self.rank} calculating mutual information.')):
+        for ts in ProgressBar(range(N_timesteps), desc=f'calculating mutual information...'):
             P = self.P_trajectory[ts]
             mi_sum = 0
             for x, Dx in Deltas.x.items():
@@ -113,22 +115,15 @@ class CalculationsMixin:
                     p_y = np.dot(P, Dy)
                     this_term = p_xy * math.log(p_xy / (p_x * p_y), base)
                     mi_sum += this_term
-            local_mi[i] = mi_sum
+            mut_inf[ts] = mi_sum
 
-        if self.parallel:
+        '''if self.parallel:
             global_mi = np.zeros(shape=N_timesteps, dtype=np.float64)
             sendcounts = self.comm.allgather(blocksize)
             displacements = self.comm.allgather(start)
-            self.comm.Allgatherv(sendbuf=local_mi, recvbuf=(global_mi, sendcounts, displacements, MPI.DOUBLE))
-        else:
-            global_mi = local_mi
-        if self._file:
-            HDF5_group = self._file[self._system_name]
-            mi_dataset = HDF5_group.create_dataset(f'{self._run_name}/mutual_information', data=global_mi)
-            mi_dataset.attrs['rates'] = [rate[1] for rate in self._rates]
-            mi_dataset.attrs['dt'] = self._dt
+            self.comm.Allgatherv(sendbuf=local_mi, recvbuf=(global_mi, sendcounts, displacements, MPI.DOUBLE))'''
 
-        return global_mi
+        return mut_inf
 
     def _calculate_mutual_information_matrix(self, Deltas, base):
         """calculates the pairwise instantaneous mutual information between
@@ -152,41 +147,21 @@ class CalculationsMixin:
                 diagonal = self._calculate_mutual_information_diagonal(Deltas, base)
                 np.fill_diagonal(global_mi_matrix, diagonal)
                 continue
-            tildeQ_matrices = {(x,y): Q * tildeQ_Delta_matrices[(x,y)] for x in Deltas.x for y in Deltas.y}
+            # first Q is upper triangle, second is for lower triangle
+            tildeQ_matrices = {(x,y): (Q*np.outer(Dy, Dx), Q*np.outer(Dx, Dy))
+                                      for x, Dx in Deltas.x.items() for y, Dy in Deltas.y.items()}
             # here we calculate the mutual information along the offdiagonal
             # so as to avoid repeatedly computing the matrix exponential
             i =  0
             j = top_col_loc
             while j < N_timesteps:    # the edge of the matrix
-                matrix_element = self._calculate_matrix_element(i, j, Deltas, tildeQ_matrices, base)
-                global_mi_matrix[i,j] = matrix_element
+                upper, lower = self._calculate_matrix_elements(i, j, Deltas, tildeQ_matrices, base)
+                global_mi_matrix[i,j] = upper
+                global_mi_matrix[j,i] = lower
                 i += 1
                 j += 1
 
         return global_mi_matrix
-
-    def _calculate_matrix_element(self, i, j, Deltas, tildeQ_matrices, base):
-        """calculates every matrix element for symmetric off diagonals"""
-
-        # here I assume j is always at the later timepoint
-        Pi = self.P_trajectory[i]
-        Pj = self.P_trajectory[j]
-
-        mi_sum = 0
-        for x, Dx in Deltas.x.items():
-            for y, Dy in Deltas.y.items():
-                tildeQ = tildeQ_matrices[(x,y)]
-                p_xy = np.dot(np.dot(tildeQ, Pi), Dy)
-                if p_xy == 0:
-                    # add zero to the sum if p_xy is 0
-                    # need to do this because 0*np.log(0) returns an error
-                    continue
-                p_x = np.dot(Pi, Dx)
-                p_y = np.dot(Pj, Dy)
-                this_term = p_xy * math.log(p_xy / (p_x * p_y), base)
-                mi_sum += this_term
-
-        return mi_sum
 
     def _make_tildeQ_Delta_matrix(self, indices):
         """helper function to construct tildeQ Delta matrices"""
@@ -194,6 +169,42 @@ class CalculationsMixin:
         for i,j in indices:
             Delta_matrix[i,j] += 1
         return Delta_matrix
+
+    def _calculate_matrix_elements(self, i, j, Deltas, tildeQ_matrices, base):
+        """calculates every matrix element for symmetric off diagonals"""
+
+        # here I assume j is always at the later timepoint
+        Pi = self.P_trajectory[i]
+        Pj = self.P_trajectory[j]
+        mi_sum_upper = 0
+        for x, Dx in Deltas.x.items():
+            for y, Dy in Deltas.y.items():
+                tildeQ = tildeQ_matrices[(x,y)][0]
+                p_xy= np.dot(np.dot(tildeQ, Pi), Dy)
+                if p_xy == 0:
+                    # add zero to the sum if p_xy is 0
+                    # need to do this because 0*np.log(0) returns an error
+                    continue
+                p_x = np.dot(Pi, Dx)
+                p_y = np.dot(Pj, Dy)
+                this_term = p_xy * math.log(p_xy / (p_x * p_y), base)
+                mi_sum_upper += this_term
+
+        mi_sum_lower = 0
+        for x, Dx in Deltas.x.items():
+            for y, Dy in Deltas.y.items():
+                tildeQ = tildeQ_matrices[(x,y)][1]
+                p_xy= np.dot(np.dot(tildeQ, Pi), Dx)
+                if p_xy == 0:
+                    # add zero to the sum if p_xy is 0
+                    # need to do this because 0*np.log(0) returns an error
+                    continue
+                p_x = np.dot(Pj, Dx)
+                p_y = np.dot(Pi, Dy)
+                this_term = p_xy * math.log(p_xy / (p_x * p_y), base)
+                mi_sum_lower += this_term
+
+        return mi_sum_upper, mi_sum_lower
 
     def calculate_marginal_probability_evolution(self, molecules):
         """"""
