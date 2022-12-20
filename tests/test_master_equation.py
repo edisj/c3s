@@ -76,26 +76,24 @@ class TestBinarySystem:
 
         X = 'A'
         Y = 'B'
-        #mut_inf = binary.calculate_mutual_information(X, Y, base=2)
-        mut_inf2 = binary.calculate_instantaneous_mutual_information(X, Y, base=2)
+        binary.calculate_instantaneous_mutual_information(X, Y, base=2)
+        mut_inf = binary._mutual_information
 
         correct_values = np.array([0., 0.43858457, 0.6457636 , 0.77025155, 0.84901701,
                                    0.90004559, 0.93353366, 0.95567906, 0.9703932 , 0.98019935])
-        #assert_array_almost_equal(mut_inf[0::10], correct_values)
-        assert_array_almost_equal(mut_inf2[0::10], correct_values)
+        assert_array_almost_equal(mut_inf[0::10], correct_values)
 
     def test_mutual_information_many_body(self, binary_many_body):
 
         X = 'A'
         Y = 'B'
-        #mut_inf = binary_many_body.calculate_mutual_information(X, Y, base=2)
-        mut_inf2 = binary_many_body.calculate_instantaneous_mutual_information(X, Y, base=2)
+        binary_many_body.calculate_instantaneous_mutual_information(X, Y, base=2)
+        mut_inf = binary_many_body._mutual_information
 
         correct_values = np.array([0., 0.92385593, 1.28269609, 1.48006893, 1.59832796,
                                    1.67229091, 1.71971752, 1.75060155, 1.77091263, 1.78435647])
 
-        #assert_array_almost_equal(mut_inf[0::10], correct_values)
-        assert_array_almost_equal(mut_inf2[0::10], correct_values)
+        assert_array_almost_equal(mut_inf[0::10], correct_values)
 
     def test_file(self, binary):
 

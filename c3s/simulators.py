@@ -390,6 +390,7 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
         self._constitutive_states = None
         self._generator_matrix = None
         self._max_populations = max_populations
+        self._mutual_information = None
 
         if file_name is None:
             with timeit() as set_constitutive_states:
@@ -570,7 +571,8 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
 
         self._results = P_trajectory
 
-    def write_to_hdf5(self, file_name, system_name, run_name=None, states=False, G=False, P_trajectory=False, mut_inf=False):
+    def write_to_hdf5(self, file_name, system_name, run_name=None, states=False, G=False, P_trajectory=False,
+                      mut_inf=False, avg_pops=None):
 
         with h5py.File(file_name, 'a') as root:
             if len(root) == 0:
@@ -586,11 +588,11 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
             if states:
                 root[system_name].create_dataset('states', data=self._constitutive_states)
             if run_name:
-                root[system_name].create_group(run_name)
-                root[f'{system_name}/{run_name}'].attrs['dt'] = self._dt
-                root[f'{system_name}/{run_name}'].create_group('rates')
+                root[system_name].create_group(f'runs/{run_name}')
+                root[f'{system_name}/runs/{run_name}'].attrs['dt'] = self._dt
+                root[f'{system_name}/runs/{run_name}'].create_group('rates')
                 for rate, value in self.rates.items():
-                    root[f'{system_name}/{run_name}/rates'].attrs[rate] = value
+                    root[f'{system_name}/runs/{run_name}/rates'].attrs[rate] = value
 
             if G:
                 root[system_name].create_dataset('G', data=self._generator_matrix)
@@ -598,9 +600,14 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
                 for key,value in self._G_ids.items():
                     root[f'{system_name}/G_ids'].create_dataset(f'{key}', data=np.array(self._G_ids[key]))
             if P_trajectory:
-                root[f'{system_name}/{run_name}'].create_dataset('P_trajectory', data=self._results)
+                root[f'{system_name}/runs/{run_name}'].create_dataset('P_trajectory', data=self._results)
             if mut_inf:
-                root[f'{system_name}/{run_name}'].create_dataset('mut_inf', data=self._mutual_information)
+                root[f'{system_name}/runs/{run_name}'].create_dataset('mut_inf', data=self._mutual_information)
+            if avg_pops:
+                for species in avg_pops:
+                    avg_pop = self.calculate_average_population(species)
+                    root[f'{system_name}/runs/{run_name}'].create_dataset(f'avg_pops/{species}', data=avg_pop)
+
 
     def _read_from_hdf5(self, filename, system_name):
 
