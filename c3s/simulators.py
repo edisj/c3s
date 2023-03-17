@@ -371,9 +371,6 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
         ----------
         cfg : str
             Path to yaml config file that specifies chemical reactions and kinetic rates
-        filename : str
-        mode : str, default='x'
-        system_name : str
         initial_state : list of int or array_like
         initial_populations : dict, default=None
             The initial population a particular species. If a species population is not specified,
