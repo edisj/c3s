@@ -1,7 +1,6 @@
 import math
 import yaml
 import copy
-import h5py
 import random
 import numpy as np
 from typing import List, Dict
@@ -17,7 +16,7 @@ class SimulatorBase:
     np.seterr(under='raise', over='raise')
 
     def __init__(self, cfg,
-                 initial_state=None, initial_populations=None, max_populations=None):
+                 initial_state=None, initial_populations=None, max_populations=None, empty=False):
         """Reads a yaml config file that specifies the chemical reactions and kinetic rates for the chemical system
         and sets important attributes.
 
@@ -49,17 +48,18 @@ class SimulatorBase:
         self._reaction_matrix = None
         self._results = None
         self._dt = None
-        # dictionary to hold timings of various codeblocks for benchmarking
-        self.timings: Dict[str, float] = {}
 
         # now that the setup is taken care of, begin filling the data structures
-        if self._config_path:
-            with open(self._config_path) as file:
-                self._config_dictionary = yaml.load(file, Loader=yaml.Loader)
-            self._set_rates()
-            self._set_species_vector()
-            self._set_initial_state()
-            self._set_reaction_matrix_and_propensity_indices()
+        with open(self._config_path) as file:
+            self._config_dictionary = yaml.load(file, Loader=yaml.Loader)
+
+        self._set_rates()
+        self._set_species_vector()
+        self._set_initial_state()
+        self._set_reaction_matrix_and_propensity_indices()
+
+        # dictionary to hold timings of various codeblocks for benchmarking
+        self.timings: Dict[str, float] = {}
 
     def _set_rates(self):
         """create `self.rates` which is len(K) List[List[str, int]] where k'th element gives
@@ -356,8 +356,7 @@ class Gillespie(SimulatorBase):
 class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
     """Simulator class of the Chemical Master Equationn (CME)."""
 
-    def __init__(self, cfg=None, file_name=None, system_name=None,
-                 initial_state=None, initial_populations=None, max_populations=None):
+    def __init__(self, cfg=None, initial_state=None, initial_populations=None, max_populations=None, empty=False):
         """Uses the Chemical Master Equation to propagate the time
            evolution of the probability dynamics of a chemical system.
 
@@ -383,21 +382,18 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
                                                      initial_state=initial_state,
                                                      initial_populations=initial_populations,
                                                      max_populations=max_populations)
-        self._system_name = system_name
         self._constitutive_states = None
         self._generator_matrix = None
         self._max_populations = max_populations
         self._mutual_information = None
 
-        if file_name is None:
+        if not empty:
             with timeit() as set_constitutive_states:
                 self._set_constitutive_states()
             with timeit() as set_generator_matrix:
                 self._set_generator_matrix()
             self.timings['t_set_constitutive_states'] = set_constitutive_states.elapsed
             self.timings['t_set_generator_matrix'] = set_generator_matrix.elapsed
-        else:
-            self._read_from_hdf5(file_name, self._system_name)
 
     def _set_constitutive_states(self):
         """Constructs all possible constitutive states from the intial state."""
@@ -464,6 +460,7 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
                 n_ids = self._propensity_indices[k]
                 # h is the combinatorial factor for number of reactions attempting to fire
                 # At the moment this assumes maximum stoichiometric coefficient of 1
+                # TODO: generalize h for any coefficient
                 state_j = self._constitutive_states[j]
                 h = np.prod([state_j[n] for n in n_ids])
                 # lambda_ is the elementary reaction rate for the k'th reaction
@@ -567,54 +564,6 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
         self.timings['t_run'] = run_time.elapsed
 
         self._results = P_trajectory
-
-    def write_to_hdf5(self, file_name, system_name, run_name=None, states=False, G=False, P_trajectory=False,
-                      mut_inf=False, avg_pops=None):
-
-        with h5py.File(file_name, 'a') as root:
-            if len(root) == 0:
-                root.create_group(system_name)
-                if self._max_populations is not None:
-                    root[system_name].create_group('max_populations')
-                    for species, population in self._max_populations.items():
-                        root[f'{system_name}/max_populations'].attrs[species] = population
-            else:
-                root.require_group(system_name)
-            root[system_name].attrs['M'] = len(self._constitutive_states)
-
-            if states:
-                root[system_name].create_dataset('states', data=self._constitutive_states)
-            if run_name:
-                root[system_name].create_group(f'runs/{run_name}')
-                root[f'{system_name}/runs/{run_name}'].attrs['dt'] = self._dt
-                root[f'{system_name}/runs/{run_name}'].create_group('rates')
-                for rate, value in self.rates.items():
-                    root[f'{system_name}/runs/{run_name}/rates'].attrs[rate] = value
-
-            if G:
-                root[system_name].create_dataset('G', data=self._generator_matrix)
-                root[system_name].create_group('G_ids')
-                for key,value in self._G_ids.items():
-                    root[f'{system_name}/G_ids'].create_dataset(f'{key}', data=np.array(self._G_ids[key]))
-            if P_trajectory:
-                root[f'{system_name}/runs/{run_name}'].create_dataset('P_trajectory', data=self._results)
-            if mut_inf:
-                root[f'{system_name}/runs/{run_name}'].create_dataset('mut_inf', data=self._mutual_information)
-            if avg_pops:
-                for species in avg_pops:
-                    avg_pop = self.calculate_average_population(species)
-                    root[f'{system_name}/runs/{run_name}'].create_dataset(f'avg_pops/{species}', data=avg_pop)
-
-
-    def _read_from_hdf5(self, filename, system_name):
-
-        with h5py.File(filename, 'r') as file:
-            system_group = file.require_group(system_name)
-            self._constitutive_states = system_group['states'][()]
-            self._generator_matrix = system_group['G'][()]
-            self._G_ids = {}
-            for k in range(len(self._reaction_matrix)):
-                self._G_ids[k] = system_group[f'G_ids/{k}'][()].tolist()
 
     @property
     def states(self):
