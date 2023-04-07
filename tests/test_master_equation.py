@@ -95,19 +95,6 @@ class TestBinarySystem:
 
         assert_array_almost_equal(mut_inf[0::10], correct_values)
 
-    def test_file(self, binary):
-
-        binary.write_to_hdf5('binary_test.h5', 'binary_test', states=True, G=True)
-        new_binary = ChemicalMasterEquation(cfg='config_files/binary.yml', initial_populations={'A':1}, file_name='binary_test.h5', system_name='binary_test')
-
-        correct_states = np.array([[1, 0],
-                                   [0, 1]])
-        assert_equal(new_binary.states, correct_states)
-
-        correct_G = np.array([[-1, 1],
-                              [ 1,-1]])
-        assert_equal(new_binary.G, correct_G)
-
 
 class Test2IsolatedSwitch:
 
@@ -118,15 +105,15 @@ class Test2IsolatedSwitch:
         system.run(start, stop, step)
         yield system
 
-    #def test_mutual_information_many_body(self, isolated_switches):
+    def test_mutual_information_many_body(self, isolated_switches):
 
-    #    X = ['A', 'A*']
-    #    Y = ['B', 'B*']
-    #    mut_inf = isolated_switches.calculate_mutual_information(X, Y, base=2)
-    #    correct_values = np.array([0.00000000e+00, 1.59908175e-15, 3.24752736e-15, 5.52514748e-15,
-    #                               7.38322748e-15, 9.14533561e-15, 1.12503565e-14, 1.35398846e-14,
-    #                               1.54150075e-14, 1.73809943e-14])
-    #    assert_array_almost_equal(mut_inf[0::10], correct_values)
+        X = ['A', 'A*']
+        Y = ['B', 'B*']
+        mut_inf = isolated_switches.calculate_instantaneous_mutual_information(X, Y, base=2)
+        correct_values = np.array([0.00000000e+00, 1.59908175e-15, 3.24752736e-15, 5.52514748e-15,
+                                   7.38322748e-15, 9.14533561e-15, 1.12503565e-14, 1.35398846e-14,
+                                   1.54150075e-14, 1.73809943e-14])
+        assert_array_almost_equal(mut_inf[0::10], correct_values)
 
 
 class TestAllosteryModel1:

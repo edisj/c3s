@@ -17,7 +17,7 @@ class CalculationsMixin:
     _species: List[str]
     _dt: float
     G: np.ndarray
-    P_trajectory: np.ndarray
+    trajectory: np.ndarray
 
     def calculate_instantaneous_mutual_information(self, X, Y, version='diagonal', timestep='all', base=2):
 
@@ -27,9 +27,9 @@ class CalculationsMixin:
         if timestep != 'all':
             raise ValueError("other timestep values not implemented yet..")
         try:
-            N_timesteps = len(self.P_trajectory)
+            N_timesteps = len(self.trajectory)
         except TypeError:
-            raise ValueError('No data found in `self.P_trajectory`.')
+            raise ValueError('No data found in `self.trajectory`.')
         if isinstance(X, str):
             X = [X]
         if isinstance(Y, str):
@@ -50,7 +50,7 @@ class CalculationsMixin:
         self.timings[f't_calculate_mi_{version}'] = calculation_block.elapsed
         self._mutual_information = mutual_information
 
-        #return mutual_information
+        return mutual_information
 
     def _get_Delta_vectors(self, molecules):
         if isinstance(molecules, str):
@@ -82,11 +82,12 @@ class CalculationsMixin:
     def _calculate_mutual_information_diagonal(self, Deltas, base):
         """"""
 
-        N_timesteps = len(self.P_trajectory)
+        N_timesteps = len(self.trajectory)
         mut_inf = np.zeros(shape=N_timesteps, dtype=np.float64)
 
+        mi_terms = {}
         for ts in ProgressBar(range(N_timesteps), desc=f'calculating mutual information...'):
-            P = self.P_trajectory[ts]
+            P = self.trajectory[ts]
             mi_sum = 0
             for x, Dx in Deltas.x.items():
                 for y, Dy in Deltas.y.items():
@@ -105,15 +106,17 @@ class CalculationsMixin:
                     p_y = np.dot(P, Dy)
                     this_term = p_xy * math.log(p_xy / (p_x * p_y), base)
                     mi_sum += this_term
+                    mi_terms[(x, y)] = this_term
+
             mut_inf[ts] = mi_sum
 
-        return mut_inf
+        return mut_inf, mi_terms
 
     def _calculate_mutual_information_matrix(self, Deltas, base):
         """calculates the pairwise instantaneous mutual information between
         every timepoint in the trajectory"""
 
-        N_timesteps = len(self.P_trajectory)
+        N_timesteps = len(self.trajectory)
         global_mi_matrix = np.zeros(shape=(N_timesteps, N_timesteps), dtype=np.float64)
         local_dts = [self._dt * ts for ts in range(N_timesteps)]
         # using a generator expression to save on memory here
@@ -143,8 +146,8 @@ class CalculationsMixin:
         """calculates every matrix element for symmetric off diagonals"""
 
         # here I assume j is always at the later timepoint
-        Pi = self.P_trajectory[i]
-        Pj = self.P_trajectory[j]
+        Pi = self.trajectory[i]
+        Pj = self.trajectory[j]
 
         mi_sum_upper = 0
         for x, Dx in Deltas.x.items():
@@ -178,22 +181,22 @@ class CalculationsMixin:
     def calculate_marginal_probability_evolution(self, molecules):
         """"""
 
-        if self.P_trajectory is None:
+        if self.trajectory is None:
             raise ValueError('No data found in self.results attribute.')
         point_maps = self._get_point_mappings(molecules)
         distribution: Dict[tuple, np.ndarray] = {}
         for point, map in point_maps.items():
-            distribution[point] = np.array([np.sum(self.P_trajectory[ts][map]) for ts in range(len(self.P_trajectory))])
+            distribution[point] = np.array([np.sum(self.trajectory[ts][map]) for ts in range(len(self.trajectory))])
 
         return distribution
 
     def calculate_average_population(self, species):
         """"""
 
-        average_population = np.empty(shape=len(self.P_trajectory), dtype=np.float64)
-        if self.P_trajectory is None:
+        average_population = np.empty(shape=len(self.trajectory), dtype=np.float64)
+        if self.trajectory is None:
             raise ValueError('No data found in self.results attribute.')
-        P = self.P_trajectory
+        P = self.trajectory
         point_maps = self._get_point_mappings(species)
         for ts in range(len(P)):
             total = 0

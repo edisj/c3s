@@ -49,9 +49,6 @@ def write_h5(filename, system, mode='a', store_trajectory=False, runid=None):
                 traj = system.P_trajectory
                 root.create_dataset(f'runs/{runid}/trajectory', data=traj)
 
-            if store_mi:
-                root.create_dataset(f'runs/{runid}/mi', data=system._mutual_information)
-
             root.require_group(f'runs/{runid}/rates')
             for rate, value in system.rates.items():
                 val = np.array(value)
@@ -80,6 +77,8 @@ def read_h5(filename, cfg, mode='r', trajectory=False, runid=None):
         max_populations = {key: root[f'max_populations/{key}'][()] for key in root['max_populations'].keys()}
         states = root['constitutive_states'][()]
         G_ids = {int(key): root[f'G_ids/{key}'][()].tolist() for key in root['G_ids']}
+        if trajectory:
+            traj = root[f'runs/{runid}/trajectory'][()]
 
     system = c3s.ChemicalMasterEquation(cfg=cfg, initial_populations=initial_populations, max_populations=max_populations,
                                         empty=True)
@@ -87,7 +86,6 @@ def read_h5(filename, cfg, mode='r', trajectory=False, runid=None):
     system._constitutive_states = states
     system._set_generator_matrix()
     if trajectory:
-        system.P_trajectory = root[f'runs/{runid}']
-
+        system._trajectory = traj
 
     return system

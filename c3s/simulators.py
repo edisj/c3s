@@ -361,10 +361,10 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
            evolution of the probability dynamics of a chemical system.
 
         The only input required by the user is the config file that specifies the elementary chemical reactions
-        and kinet rates, and the initial nonzero population numbers of each species. The constructor will
+        and kinetic rates, and the initial nonzero population numbers of each species. The constructor will
         build the full constitutive state space in `self.constitutive_states` and the generator matrix in
-        `self.generator_matrix`. To run the simulator, call the `self.run()` method with start, stop, and step
-        arguments. The full P(t) trajectory will be stored in `self.results`.
+        `self.G`. To run the simulator, call the `self.run()` method with start, stop, and step
+        arguments. The full P(t) trajectory will be stored in `self.trajectory`.
 
         Parameters
         ----------
@@ -385,6 +385,7 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
         self._constitutive_states = None
         self._generator_matrix = None
         self._max_populations = max_populations
+        self._trajectory = None
         self._mutual_information = None
 
         if not empty:
@@ -529,7 +530,7 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
             self._generator_matrix[m,m] = 0
             self._generator_matrix[m,m] = -np.sum(self._generator_matrix[:, m])
 
-    def run(self, start, stop, step, run_name=None, continued=False, overwrite=False):
+    def run(self, start, stop, step, run_name=None, overwrite=False):
         """Runs the chemical master equation simulation.
 
         Parameters
@@ -542,7 +543,7 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
 
         """
 
-        if self._results is not None and not overwrite:
+        if self._trajectory is not None and not overwrite:
             raise ValueError("Data from previous run found in `self.P_trajectory`. "
                              "To write over this data, set the `overwrite=True`")
 
@@ -550,20 +551,21 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
         # using np.round to avoid floating point precision errors
         n_timesteps = int(np.round((stop - start) / self._dt))
         M = len(self._constitutive_states)
-        P_trajectory = np.empty(shape=(n_timesteps, M), dtype=np.float64)
+        trajectory = np.empty(shape=(n_timesteps, M), dtype=np.float64)
         # fixing initial probability to be 1 in the intitial state
-        P_trajectory[0] = np.zeros(shape=M, dtype=np.float64)
-        P_trajectory[0, 0] = 1
+        trajectory[0] = np.zeros(shape=M, dtype=np.float64)
+        trajectory[0, 0] = 1
 
         with timeit() as matrix_exponential:
             Q = expm(self._generator_matrix * self._dt)
+        self.Q = Q
         with timeit() as run_time:
             for ts in ProgressBar(range(n_timesteps - 1), desc=f'running...'):
-                P_trajectory[ts + 1] = Q.dot(P_trajectory[ts])
+                trajectory[ts + 1] = Q.dot(trajectory[ts])
         self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
         self.timings['t_run'] = run_time.elapsed
 
-        self._results = P_trajectory
+        self._trajectory = trajectory
 
     @property
     def states(self):
@@ -575,8 +577,8 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
     def G(self):
         return self._generator_matrix
     @property
-    def P_trajectory(self):
-        return self._results
-    @P_trajectory.setter
-    def P_trajectory(self, value):
-        self._results = value
+    def trajectory(self):
+        return self._trajectory
+    @trajectory.setter
+    def trajectory(self, value):
+        self._trajectory = value
