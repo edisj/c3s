@@ -18,7 +18,6 @@ def write_h5(filename, system, mode='a', store_trajectory=False, runid=None):
 
     if mode == 'w':
         with c3sFile(filename, mode=mode) as root:
-
             root.require_group('cfg/reactions')
             for reaction, rate in system._config_dictionary['reactions'].items():
                 root.create_dataset(f"cfg/reactions/{reaction.replace(' ', '')}/{rate[0]}", data=rate[1])
@@ -41,10 +40,10 @@ def write_h5(filename, system, mode='a', store_trajectory=False, runid=None):
                     count = np.array(value)
                     root['max_populations'].require_dataset(f'{species}', data=count, shape=count.shape, dtype=count.dtype)
 
-            root.create_dataset('propagator_matrix', data=system.Q)
-            root['propagator_matrix'].attrs['dt'] = system._dt
+                #root.create_dataset('propagator_matrix', data=system.Q)
+                #root['propagator_matrix'].attrs['dt'] = system._dt
 
-    if mode == 'a':
+    if store_trajectory:
         with c3sFile(filename, mode=mode) as root:
             root.create_group(f'runs/{runid}')
             if store_trajectory:
@@ -82,8 +81,8 @@ def read_h5(filename, cfg, mode='r', trajectory=False, runid=None):
                                             empty=True)
         system._G_ids = G_ids
         system._constitutive_states = root['constitutive_states'][()]
-        system.Q = root['propagator_matrix'][()]
-        system._dt = root['propagator_matrix'].attrs['dt']
+        #system.Q = root['propagator_matrix'][()]
+        #system._dt = root['propagator_matrix'].attrs['dt']
         if trajectory:
             system._trajectory = root[f'runs/{runid}/trajectory'][()]
 

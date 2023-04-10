@@ -27,20 +27,8 @@ class CalculationsMixin:
             N_timesteps = len(self.trajectory)
         except TypeError:
             raise ValueError('No data found in `self.trajectory`.')
-        if isinstance(X, str):
-            X = [X]
-        if isinstance(Y, str):
-            Y = [Y]
-        X = sorted(X)
-        Y = sorted(Y)
-        if X + Y != sorted(X + Y):
-            X, Y = Y, X
 
-        DeltaTuple = namedtuple("Deltas", "x y xy")
-        Deltas = DeltaTuple(
-            self._get_Delta_vectors(X),
-            self._get_Delta_vectors(Y),
-            self._get_Delta_vectors(X + Y))
+        Deltas = self._fix_species_and_get_Deltas(X, Y)
 
         with timeit() as calculation_block:
             mut_inf = np.zeros(shape=N_timesteps, dtype=np.float64)
@@ -72,6 +60,24 @@ class CalculationsMixin:
         self._mutual_information = mut_inf
 
         return mut_inf, mi_terms
+
+    def _fix_species_and_get_Deltas(self, X, Y):
+        if isinstance(X, str):
+            X = [X]
+        if isinstance(Y, str):
+            Y = [Y]
+        X = sorted(X)
+        Y = sorted(Y)
+        if X + Y != sorted(X + Y):
+            X, Y = Y, X
+
+        DeltaTuple = namedtuple("Deltas", "x y xy")
+        Deltas = DeltaTuple(
+            self._get_Delta_vectors(X),
+            self._get_Delta_vectors(Y),
+            self._get_Delta_vectors(X + Y))
+
+        return Deltas
 
     def _get_Delta_vectors(self, molecules):
         if isinstance(molecules, str):
@@ -201,20 +207,7 @@ class CalculationsMixin:
 
     def generate_analytic_MI_function(self, X, Y, base=2):
 
-        if isinstance(X, str):
-            X = [X]
-        if isinstance(Y, str):
-            Y = [Y]
-        X = sorted(X)
-        Y = sorted(Y)
-        if X + Y != sorted(X + Y):
-            X, Y = Y, X
-
-        DeltaTuple = namedtuple("Deltas", "x y xy")
-        Deltas = DeltaTuple(
-            self._get_Delta_vectors(X),
-            self._get_Delta_vectors(Y),
-            self._get_Delta_vectors(X + Y))
+        Deltas = self._fix_species_and_get_Deltas(X, Y)
 
         indices_for_each_term = [[np.argwhere(Deltas.xy[x+y]).T.tolist()[0], np.argwhere(Dx).T.tolist()[0], np.argwhere(Dy).T.tolist()[0]]
                                 for x,Dx in Deltas.x.items() for y,Dy in Deltas.y.items() if x+y in Deltas.xy]
@@ -236,20 +229,7 @@ class CalculationsMixin:
 
     def _get_analytic_string(self, X, Y):
 
-        if isinstance(X, str):
-            X = [X]
-        if isinstance(Y, str):
-            Y = [Y]
-        X = sorted(X)
-        Y = sorted(Y)
-        if X + Y != sorted(X + Y):
-            X, Y = Y, X
-
-        DeltaTuple = namedtuple("Deltas", "x y xy")
-        Deltas = DeltaTuple(
-            self._get_Delta_vectors(X),
-            self._get_Delta_vectors(Y),
-            self._get_Delta_vectors(X + Y))
+        Deltas = self._fix_species_and_get_Deltas(X, Y)
 
         indices_for_each_term = [[np.argwhere(Deltas.xy[x+y]).T.tolist()[0], np.argwhere(Dx).T.tolist()[0], np.argwhere(Dy).T.tolist()[0]]
                                 for x,Dx in Deltas.x.items() for y,Dy in Deltas.y.items() if x+y in Deltas.xy]
@@ -268,7 +248,7 @@ class CalculationsMixin:
         """"""
 
         if self.trajectory is None:
-            raise ValueError('No data found in self.results attribute.')
+            raise ValueError('No data found in self.trajectory.')
         point_maps = self._get_point_mappings(molecules)
         distribution: Dict[tuple, np.ndarray] = {}
         for point, map in point_maps.items():
@@ -281,7 +261,7 @@ class CalculationsMixin:
 
         average_population = np.empty(shape=len(self.trajectory), dtype=np.float64)
         if self.trajectory is None:
-            raise ValueError('No data found in self.results attribute.')
+            raise ValueError('No data found in self.trajectory.')
         P = self.trajectory
         point_maps = self._get_point_mappings(species)
         for ts in range(len(P)):

@@ -564,15 +564,15 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
         trajectory[0] = np.zeros(shape=M, dtype=np.float64)
         trajectory[0, 0] = 1
 
-        if self.Q is None:
-            with timeit() as matrix_exponential:
-                Q = expm(self._generator_matrix * self._dt)
-            self.Q = Q
-            self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
+        #if self.Q is None:
+        with timeit() as matrix_exponential:
+            Q = expm(self._generator_matrix * self._dt)
+            #self.Q = Q
+        self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
 
         with timeit() as run_time:
             for ts in range(n_timesteps - 1):
-                trajectory[ts + 1] = self.Q.dot(trajectory[ts])
+                trajectory[ts + 1] = Q.dot(trajectory[ts])
         self.timings['t_run'] = run_time.elapsed
 
         self._trajectory = trajectory
