@@ -6,12 +6,42 @@ import sys
 import numpy as np
 import math
 from c3s import ChemicalMasterEquation
+from c3s.h5io import read_h5, write_h5
 from numpy.testing import assert_almost_equal, assert_equal, assert_array_almost_equal,assert_array_equal
 
 
 def test_c3s_imported():
     """Sample test, will always pass so long as import statement worked."""
     assert "c3s" in sys.modules
+
+
+class TestH5IO:
+
+    @pytest.fixture()
+    def outfile(self, tmpdir):
+        return str(tmpdir) + 'c3s_write_test.h5'
+
+    def test_file_io(self, outfile):
+        system = ChemicalMasterEquation(cfg='config_files/2_isolated_switches.yml',
+                                        initial_populations={'A': 1, 'B': 1})
+        start, stop, step = 0, 1, 0.01
+        system.run(start, stop, step)
+        system._set_propagator_matrix()
+
+        write_h5(outfile, system, mode='w')
+        system2 = read_h5(outfile, cfg='config_files/2_isolated_switches.yml')
+        system2._set_generator_matrix()
+        assert_array_equal(system.states, system2.states)
+        assert_array_almost_equal(system.Q, system2.Q)
+        assert_array_equal(system.G, system2.G)
+        assert_equal(system.species, system2.species)
+
+        stops = [1, 2, 3]
+        for stop in stops:
+            system.run(0, stop, 0.01, overwrite=True)
+            write_h5(outfile, system, mode='a', store_trajectory=True, runid=f'{stop}')
+            system3 = read_h5(outfile, cfg='config_files/2_isolated_switches.yml', trajectory=True, runid=f'{stop}')
+            assert_array_equal(system.trajectory, system3.trajectory)
 
 class TestBinarySystem:
 
@@ -109,7 +139,8 @@ class Test2IsolatedSwitch:
 
         X = ['A', 'A*']
         Y = ['B', 'B*']
-        mut_inf = isolated_switches.calculate_instantaneous_mutual_information(X, Y, base=2)
+        isolated_switches.calculate_instantaneous_mutual_information(X, Y, base=2)
+        mut_inf = isolated_switches._mutual_information
         correct_values = np.array([0.00000000e+00, 1.59908175e-15, 3.24752736e-15, 5.52514748e-15,
                                    7.38322748e-15, 9.14533561e-15, 1.12503565e-14, 1.35398846e-14,
                                    1.54150075e-14, 1.73809943e-14])

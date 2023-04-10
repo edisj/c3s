@@ -384,6 +384,7 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
                                                      max_populations=max_populations)
         self._constitutive_states = None
         self._generator_matrix = None
+        self.Q = None
         self._max_populations = max_populations
         self._trajectory = None
         self._mutual_information = None
@@ -454,7 +455,7 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
         M = len(self._constitutive_states)
         K = len(self._reaction_matrix)
         G = np.zeros(shape=(M, M), dtype=np.float64)
-        for k, value in ProgressBar(self._G_ids.items()):
+        for k, value in self._G_ids.items():
             for idx in value:
                 i,j = idx
                 # the indices of the species involved in the reaction
@@ -472,6 +473,13 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
             # fix the diagonal to be the negative sum of the column
             G[i,i] = -np.sum(G[:,i])
         self._generator_matrix = G
+
+    def _set_propagator_matrix(self, dt=1):
+        with timeit() as matrix_exponential:
+            Q = expm(self._generator_matrix * dt)
+        self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
+        self.Q = Q
+        self._dt = dt
 
     def get_readable_states(self):
         """creates a convenient human readable list of the constitutive states"""
@@ -530,7 +538,7 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
             self._generator_matrix[m,m] = 0
             self._generator_matrix[m,m] = -np.sum(self._generator_matrix[:, m])
 
-    def run(self, start, stop, step, run_name=None, overwrite=False):
+    def run(self, start, stop, step=1, run_name=None, overwrite=False):
         """Runs the chemical master equation simulation.
 
         Parameters
@@ -556,13 +564,15 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
         trajectory[0] = np.zeros(shape=M, dtype=np.float64)
         trajectory[0, 0] = 1
 
-        with timeit() as matrix_exponential:
-            Q = expm(self._generator_matrix * self._dt)
-        self.Q = Q
+        if self.Q is None:
+            with timeit() as matrix_exponential:
+                Q = expm(self._generator_matrix * self._dt)
+            self.Q = Q
+            self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
+
         with timeit() as run_time:
-            for ts in ProgressBar(range(n_timesteps - 1), desc=f'running...'):
-                trajectory[ts + 1] = Q.dot(trajectory[ts])
-        self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
+            for ts in range(n_timesteps - 1):
+                trajectory[ts + 1] = self.Q.dot(trajectory[ts])
         self.timings['t_run'] = run_time.elapsed
 
         self._trajectory = trajectory

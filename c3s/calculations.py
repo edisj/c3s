@@ -19,10 +19,7 @@ class CalculationsMixin:
     G: np.ndarray
     trajectory: np.ndarray
 
-    def calculate_instantaneous_mutual_information(self, X, Y, version='diagonal', timestep='all', base=2):
-
-        calculate_mi_dispatch = {'diagonal': self._calculate_mutual_information_diagonal,
-                                 'matrix': self._calculate_mutual_information_matrix}
+    def calculate_instantaneous_mutual_information(self, X, Y, timestep='all', base=2):
 
         if timestep != 'all':
             raise ValueError("other timestep values not implemented yet..")
@@ -46,11 +43,35 @@ class CalculationsMixin:
             self._get_Delta_vectors(X + Y))
 
         with timeit() as calculation_block:
-            mutual_information = calculate_mi_dispatch[version](Deltas, base)
-        self.timings[f't_calculate_mi_{version}'] = calculation_block.elapsed
-        self._mutual_information = mutual_information
+            mut_inf = np.zeros(shape=N_timesteps, dtype=np.float64)
+            mi_terms = [{} for _ in range(N_timesteps)]
+            for ts in range(N_timesteps):
+                P = self.trajectory[ts]
+                mi_sum = 0
+                for x, Dx in Deltas.x.items():
+                    for y, Dy in Deltas.y.items():
+                        xy = x + y
+                        if xy not in Deltas.xy:
+                            # skip cases where the concatenated coordinate tuples
+                            # were never in the joint distribution to begin with
+                            continue
+                        Dxy = Deltas.xy[xy]
+                        p_xy = np.dot(P, Dxy)
+                        if p_xy == 0:
+                            # add zero to the sum if p_xy is 0
+                            # need to do this because 0*np.log(0) returns an error
+                            continue
+                        p_x = np.dot(P, Dx)
+                        p_y = np.dot(P, Dy)
+                        this_term = p_xy * math.log(p_xy / (p_x * p_y), base)
+                        mi_sum += this_term
+                        mi_terms[ts][xy] = this_term
+                mut_inf[ts] = mi_sum
 
-        return mutual_information
+        self.timings[f't_calculate_insant_mi'] = calculation_block.elapsed
+        self._mutual_information = mut_inf
+
+        return mut_inf, mi_terms
 
     def _get_Delta_vectors(self, molecules):
         if isinstance(molecules, str):
@@ -86,7 +107,7 @@ class CalculationsMixin:
         mut_inf = np.zeros(shape=N_timesteps, dtype=np.float64)
 
         mi_terms = {}
-        for ts in ProgressBar(range(N_timesteps), desc=f'calculating mutual information...'):
+        for ts in range(N_timesteps):
             P = self.trajectory[ts]
             mi_sum = 0
             for x, Dx in Deltas.x.items():
@@ -106,7 +127,7 @@ class CalculationsMixin:
                     p_y = np.dot(P, Dy)
                     this_term = p_xy * math.log(p_xy / (p_x * p_y), base)
                     mi_sum += this_term
-                    mi_terms[(x, y)] = this_term
+                    mi_terms[xy] = this_term
 
             mut_inf[ts] = mi_sum
 
@@ -177,6 +198,71 @@ class CalculationsMixin:
                 mi_sum_lower += this_term
 
         return mi_sum_upper, mi_sum_lower
+
+    def generate_analytic_MI_function(self, X, Y, base=2):
+
+        if isinstance(X, str):
+            X = [X]
+        if isinstance(Y, str):
+            Y = [Y]
+        X = sorted(X)
+        Y = sorted(Y)
+        if X + Y != sorted(X + Y):
+            X, Y = Y, X
+
+        DeltaTuple = namedtuple("Deltas", "x y xy")
+        Deltas = DeltaTuple(
+            self._get_Delta_vectors(X),
+            self._get_Delta_vectors(Y),
+            self._get_Delta_vectors(X + Y))
+
+        indices_for_each_term = [[np.argwhere(Deltas.xy[x+y]).T.tolist()[0], np.argwhere(Dx).T.tolist()[0], np.argwhere(Dy).T.tolist()[0]]
+                                for x,Dx in Deltas.x.items() for y,Dy in Deltas.y.items() if x+y in Deltas.xy]
+
+        def analytic_function(P, base=base):
+            term_values = []
+            for ids in indices_for_each_term:
+                Pxy = sum([P[i] for i in ids[0]])
+                Px = sum([P[i] for i in ids[1]])
+                Py = sum([P[i] for i in ids[2]])
+                if Pxy == 0:
+                    this_term = 0.0
+                else:
+                    this_term = Pxy * math.log( Pxy / (Px*Py), base)
+                term_values.append(this_term)
+            return sum(term_values)
+
+        return analytic_function
+
+    def _get_analytic_string(self, X, Y):
+
+        if isinstance(X, str):
+            X = [X]
+        if isinstance(Y, str):
+            Y = [Y]
+        X = sorted(X)
+        Y = sorted(Y)
+        if X + Y != sorted(X + Y):
+            X, Y = Y, X
+
+        DeltaTuple = namedtuple("Deltas", "x y xy")
+        Deltas = DeltaTuple(
+            self._get_Delta_vectors(X),
+            self._get_Delta_vectors(Y),
+            self._get_Delta_vectors(X + Y))
+
+        indices_for_each_term = [[np.argwhere(Deltas.xy[x+y]).T.tolist()[0], np.argwhere(Dx).T.tolist()[0], np.argwhere(Dy).T.tolist()[0]]
+                                for x,Dx in Deltas.x.items() for y,Dy in Deltas.y.items() if x+y in Deltas.xy]
+        string_per_term = []
+        for ids in indices_for_each_term:
+            Pxy = [f"p{i + 1}" for i in ids[0]]
+            Px = [f"p{i + 1}" for i in ids[1]]
+            Py = [f"p{i + 1}" for i in ids[2]]
+
+            term = f"{Pxy}log({Pxy}/({Px}{Py}))"
+            string_per_term.append(term)
+
+        return string_per_term
 
     def calculate_marginal_probability_evolution(self, molecules):
         """"""

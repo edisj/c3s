@@ -35,25 +35,23 @@ def write_h5(filename, system, mode='a', store_trajectory=False, runid=None):
                 count = np.array(value)
                 root['initial_populations'].require_dataset(f'{species}', data=count, shape=count.shape, dtype=count.dtype)
 
-            root.require_group('max_populations')
-            for species, value in system._max_populations.items():
-                count = np.array(value)
-                root['max_populations'].require_dataset(f'{species}', data=count, shape=count.shape, dtype=count.dtype)
+            if system._max_populations:
+                root.require_group('max_populations')
+                for species, value in system._max_populations.items():
+                    count = np.array(value)
+                    root['max_populations'].require_dataset(f'{species}', data=count, shape=count.shape, dtype=count.dtype)
+
+            root.create_dataset('propagator_matrix', data=system.Q)
+            root['propagator_matrix'].attrs['dt'] = system._dt
 
     if mode == 'a':
         with c3sFile(filename, mode=mode) as root:
-
             root.create_group(f'runs/{runid}')
-
             if store_trajectory:
-                traj = system.P_trajectory
+                traj = system._trajectory
                 root.create_dataset(f'runs/{runid}/trajectory', data=traj)
-
-            root.require_group(f'runs/{runid}/rates')
-            for rate, value in system.rates.items():
-                val = np.array(value)
-                root[f'runs/{runid}/rates'].create_dataset(f'{rate}', data=val)
-
+                for rate, value in system.rates.items():
+                    root[f'runs/{runid}/trajectory'].attrs[rate] = value
 
 def _dict_to_dset(f, group):
     pass
@@ -74,18 +72,19 @@ def read_h5(filename, cfg, mode='r', trajectory=False, runid=None):
         _config_dictionary = dict(reactions=_reaction_dict)'''
 
         initial_populations = {key: root[f'initial_populations/{key}'][()] for key in root['initial_populations'].keys()}
-        max_populations = {key: root[f'max_populations/{key}'][()] for key in root['max_populations'].keys()}
-        states = root['constitutive_states'][()]
+        if 'max_populations' in root:
+            max_populations = {key: root[f'max_populations/{key}'][()] for key in root['max_populations'].keys()}
+        else:
+            max_populations=None
         G_ids = {int(key): root[f'G_ids/{key}'][()].tolist() for key in root['G_ids']}
-        if trajectory:
-            traj = root[f'runs/{runid}/trajectory'][()]
 
-    system = c3s.ChemicalMasterEquation(cfg=cfg, initial_populations=initial_populations, max_populations=max_populations,
-                                        empty=True)
-    system._G_ids = G_ids
-    system._constitutive_states = states
-    system._set_generator_matrix()
-    if trajectory:
-        system._trajectory = traj
+        system = c3s.ChemicalMasterEquation(cfg=cfg, initial_populations=initial_populations, max_populations=max_populations,
+                                            empty=True)
+        system._G_ids = G_ids
+        system._constitutive_states = root['constitutive_states'][()]
+        system.Q = root['propagator_matrix'][()]
+        system._dt = root['propagator_matrix'].attrs['dt']
+        if trajectory:
+            system._trajectory = root[f'runs/{runid}/trajectory'][()]
 
     return system
