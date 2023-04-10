@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
-from c3s.simulators import MasterEquation
-from c3s.calculations import calc_mutual_information
+from c3s import MasterEquation
+from c3s import calc_mutual_information
 import argparse
 from pathlib import Path
 from mpi4py import MPI
