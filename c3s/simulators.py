@@ -538,7 +538,7 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
             self._generator_matrix[m,m] = 0
             self._generator_matrix[m,m] = -np.sum(self._generator_matrix[:, m])
 
-    def run(self, start, stop, step=1, run_name=None, overwrite=False):
+    def run(self, start, stop, step=1, run_name=None, overwrite=False, continued=False):
         """Runs the chemical master equation simulation.
 
         Parameters
@@ -552,30 +552,37 @@ class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
         """
 
         if self._trajectory is not None and not overwrite:
-            raise ValueError("Data from previous run found in `self.P_trajectory`. "
-                             "To write over this data, set the `overwrite=True`")
+            if not continued:
+                raise ValueError("Data from previous run found in `self.P_trajectory`. "
+                                 "To write over this data, set the `overwrite=True`")
 
         self._dt = step
         # using np.round to avoid floating point precision errors
         n_timesteps = int(np.round((stop - start) / self._dt))
         M = len(self._constitutive_states)
-        trajectory = np.empty(shape=(n_timesteps, M), dtype=np.float64)
-        # fixing initial probability to be 1 in the intitial state
-        trajectory[0] = np.zeros(shape=M, dtype=np.float64)
-        trajectory[0, 0] = 1
 
-        #if self.Q is None:
         with timeit() as matrix_exponential:
             Q = expm(self._generator_matrix * self._dt)
             #self.Q = Q
         self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
+
+        trajectory = np.empty(shape=(n_timesteps, M), dtype=np.float64)
+        if continued:
+            trajectory[0] = Q.dot(self._trajectory[-1])
+        else:
+            # fixing initial probability to be 1 in the intitial state
+            trajectory[0] = np.zeros(shape=M, dtype=np.float64)
+            trajectory[0, 0] = 1
 
         with timeit() as run_time:
             for ts in range(n_timesteps - 1):
                 trajectory[ts + 1] = Q.dot(trajectory[ts])
         self.timings['t_run'] = run_time.elapsed
 
-        self._trajectory = trajectory
+        if continued:
+            self._trajectory = np.vstack([self._trajectory, trajectory])
+        else:
+            self._trajectory = trajectory
 
     @property
     def states(self):
