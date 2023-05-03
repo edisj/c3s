@@ -7,7 +7,473 @@ from typing import List, Dict
 from collections import namedtuple
 from scipy.sparse.linalg import expm
 from .calculations import CalculationsMixin
-from .utils import timeit, ProgressBar
+from .utils import timeit
+from c3s.h5io import c3sH5IO
+
+
+class Reactions:
+    """meant to be used as a component class via composition for the simulator classes"""
+
+    def __init__(self, config_file):
+        """reads the config file and sets various important attributes"""
+
+        with open(config_file) as yaml_file:
+            self._original_config = yaml.load(yaml_file, Loader=yaml.Loader)
+        self._rates, self._reactants, self._products = self._set_rates()
+        self. _species = self._set_species_vector()
+        self._reaction_matrix = self._set_reaction_matrix()
+        self._propensity_ids = self._set_reaction_propensities()
+
+    @property
+    def rates(self):
+        # rates is Dict, _rates is List
+        return dict(self._rates)
+    @rates.setter
+    def rates(self, value):
+        self._rates = value
+
+    @property
+    def reactants(self) -> List[str]:
+        return self._reactants
+    @reactants.setter
+    def reactants(self, value):
+        self._reactants = value
+
+    @property
+    def products(self) -> List[str]:
+        return self._products
+    @products.setter
+    def products(self, value):
+        self._products = value
+
+    @property
+    def species(self) -> List[str]:
+        return self._species
+    @species.setter
+    def species(self, value):
+        self._species = value
+
+    @property
+    def reaction_matrix(self) -> np.ndarray:
+        return self._reaction_matrix
+    @reaction_matrix.setter
+    def reaction_matrix(self, value):
+        self._reaction_matrix = value
+
+    @property
+    def propensity_ids(self):
+        return self._propensity_ids
+    @propensity_ids.setter
+    def propensity_ids(self, value):
+        self._propensity_ids = value
+
+    def _set_rates(self):
+        """create `self.rates` which is len(K) List[List[str, int]] where k'th element gives
+        the name and value of the rate constant for the k'th reaction"""
+
+        reactants = []
+        products = []
+        rates = []
+        # need to use deepcopy because `self.update_rates()` will change rates in self._original_config
+        config_data = copy.deepcopy(self._original_config)
+        for reaction, rate_list in config_data['reactions'].items():
+            reactants.append(reaction.replace(' ', '').split('->')[0].split('+'))
+            products.append(reaction.replace(' ', '').split('->')[1].split('+'))
+            rates.append(rate_list)
+
+        return rates, reactants, products
+
+    def _set_species_vector(self):
+        """creates `self.species` which is len(N) List[str] where n'th element is the name of the n'th species"""
+
+        species: List[str] = []
+        for k, (reactants, products) in enumerate(zip(self._reactants, self._products)):
+            # len(reactants) is not necessarily = len(products) so we have to loop over each
+            # TODO: need to add check and warning for birth process without max_popoulations
+            for molecule in reactants:
+                species.append(molecule)
+            for molecule in products:
+                species.append(molecule)
+
+        while '0' in species:
+            species.remove('0')
+        # remove duplicates and sort
+        species = sorted(list(set(species)))
+
+        return species
+
+    def _set_reaction_matrix(self):
+        """creates `self.reaction_matrix` which is shape(K,N) array where the [k,n] element
+        gives the change in the n'th species for the k'th reaction"""
+
+        N_reactions = len(self._reactants)
+        N_species = len(self._species)
+        reaction_matrix = np.zeros(shape=(N_reactions, N_species), dtype=np.int32)
+        for reaction, reactants, products in zip(reaction_matrix, self._reactants, self._products):
+            for n, species in enumerate(self._species):
+                # if this species in both a product and reactant, net effect is 0
+                if species in reactants:
+                    reaction[n] += -1
+                if species in products:
+                    reaction[n] += 1
+
+        return reaction_matrix
+
+    def _set_reaction_propensities(self):
+        """creates `self._propensenity_ids` which is len(K) List[List[int]] whose k'th element
+         gives the indices of `self._species` that are involved in the k'th reaction"""
+
+        reaction_matrix = self._reaction_matrix
+        N, K = len(self._species), len(reaction_matrix)
+        propensity_ids = [[n for n in range(N) if reaction_matrix[k, n] < 0] for k in range(K)]
+
+        return propensity_ids
+
+    def print_propensities(self):
+        """generates a readable list of the propensity of each reaction"""
+
+        propensity_strings: List[str] = []
+        for propensity_ids, rate in zip(self._propensity_ids, self._rates):
+            transition_rate = rate[0]
+            for n in propensity_ids:
+                transition_rate += f'c^{self._species[n]}'
+            propensity_strings.append(transition_rate)
+
+        return propensity_strings
+
+
+class ChemicalMasterEquation(CalculationsMixin):
+    """
+    Simulator class of the Chemical Master Equationn (CME).
+
+    Uses the Chemical Master Equation to numerically integrate the time
+    evolution of the probability trajectory of a chemical system.
+
+    The only input required by the user is the config file that specifies the elementary chemical reactions
+    and kinetic rates, and the initial nonzero population numbers of each species. The constructor will
+    build the full constitutive state space in `self.constitutive_states` and the generator matrix in
+    `self.G`. To run the simulator, call the `self.run()` method with start, stop, and dt
+    arguments. The full P(t) trajectory will be stored in `self.trajectory`.
+
+    """
+
+    np.seterr(under='raise', over='raise')
+
+    def __init__(self,
+                 config_file=None,
+                 initial_state=None,
+                 initial_populations=None,
+                 max_populations=None,
+                 empty=False,
+                 low_memory=False):
+        """
+        Parameters
+        ----------
+        config_file : str
+            path to yaml config file that specifies chemical reactions and elementary rates
+        initial_state : List[int] or array
+            initial collapsed state vector, if initial populations is not given
+        initial_populations : dict, default=None
+            dictionary of initial species populations
+            if a species population is not specified, it's initial population is taken to be 0
+        max_populations : dict, default=None
+            maximum allowable populaation for some species
+        empty : bool, default=False
+        low_memory : bool
+
+        """
+
+        self.Reactions = Reactions(config_file)
+        self.species = self.Reactions.species
+        self.rates = self.Reactions.rates
+        self._rates = self.Reactions._rates
+        if initial_state and initial_populations:
+            raise ValueError("Do not specify both the `initial_state` and `initial_populations` parameters. "
+                             "Use one or the other.")
+        self._initial_state = initial_state
+        self._initial_populations = initial_populations
+        self._max_populations = max_populations
+        self._set_initial_state()
+        self._low_memory = low_memory
+        self._array_dtype = np.float32 if self._low_memory else np.float64
+
+        self._constitutive_states = None
+        self._generator_matrix = None
+        self._trajectory = None
+
+        # dictionary to hold timings of various codeblocks for benchmarking
+        self.timings: Dict[str, float] = {}
+
+        if not empty:
+            with timeit() as set_constitutive_states:
+                self._build_constitutive_states()
+            if not self._low_memory:
+                with timeit() as set_generator_matrix:
+                    self._set_generator_matrix()
+            self.timings['t_set_constitutive_states'] = set_constitutive_states.elapsed
+
+    @property
+    def states(self):
+        return self._constitutive_states
+    @states.setter
+    def states(self, value):
+        self._constitutive_states = value
+    @property
+    def G(self):
+        return self._generator_matrix
+    @property
+    def trajectory(self):
+        return self._trajectory
+    @trajectory.setter
+    def trajectory(self, value):
+        self._trajectory = value
+
+    def _set_initial_state(self):
+        """sets the `self.initial_state` attribute that specifies the vector of species counts at t=0"""
+
+        if self._initial_state:
+            assert len(self._initial_state) == len(self.species)
+            # initial state was specified by the user
+            return
+
+        for species in self._initial_populations.keys():
+            if species not in self.species:
+                raise KeyError(f'{species} is not a valid species. It must be in one of the '
+                               f'chemical reactions specified in the config file.')
+        # dont remember why I put this in this method
+        if self._max_populations:
+            for species in self._max_populations.keys():
+                if species not in self.species:
+                    raise KeyError(f'{species} is not a valid species. It must be in one of the '
+                                   f'chemical reactions specified in the config file.')
+
+        initial_state = [self._initial_populations[species]
+                         if species in self._initial_populations else 0
+                         for species in self.species]
+
+        self._initial_state = initial_state
+
+    def _build_constitutive_states(self):
+        """generates all possible constitutive states from the intial state."""
+
+        constitutive_states = [self._initial_state]
+        population_limits = [
+            (self.species.index(species), max_count)
+            for species, max_count in self._max_populations.items()
+        ] if self._max_populations else False
+
+        self._G_ids = {k: [] for k in range(len(self.Reactions.reaction_matrix))}
+
+        # newly_added keeps track of the most recently accepted states
+        newly_added_states = [np.array(self._initial_state)]
+        while True:
+            accepted_candidate_states = []
+            for state in newly_added_states:
+                i = int(np.argwhere(np.all(constitutive_states == state, axis=1)))
+                # the idea here is that for each of the recently added states,
+                # we iterate through each reaction to see if a transition is possible
+                for k, reaction in enumerate(self.Reactions.reaction_matrix):
+                    # gives a boolean array for which reactants are required
+                    reactants_required = np.argwhere(reaction < 0).T
+                    reactants_available = state > 0
+                    # true if this candidate state has all of the reactants available for the reaction
+                    if np.all(reactants_available[reactants_required]):
+                        # apply the reaction and add the new state into our list of constitutive
+                        # states only if it is a new state that has not been previously visited
+                        new_candidate_state = state + reaction
+                        is_actually_new_state = list(new_candidate_state) not in constitutive_states
+                        does_not_exceed_max_population = all([new_candidate_state[i] <= max_count for i, max_count
+                                                              in population_limits]) if population_limits else True
+                        if does_not_exceed_max_population:
+                            if is_actually_new_state:
+                                j = len(constitutive_states)
+                                accepted_candidate_states.append(new_candidate_state)
+                                constitutive_states.append(list(new_candidate_state))
+                            else:
+                                j = int(np.argwhere(np.all(constitutive_states == new_candidate_state, axis=1)))
+                            self._G_ids[k].append((j,i))
+
+            # replace the old set of new states with new batch
+            newly_added_states = accepted_candidate_states
+            # once we reach the point where no new states are accessible we terminate
+            if not newly_added_states:
+                break
+
+        self.M = len(constitutive_states)
+        self._constitutive_states = np.array(constitutive_states, dtype=np.int32)
+
+    def _set_generator_matrix(self):
+        self._generator_matrix = self._build_generator_matrix()
+
+    def _build_generator_matrix(self):
+        """Constructs the generator matrix.
+
+        The generator matrix is an MxM matrix where M is the total number of states given
+        by `len(self.constitutive_states)`.
+
+        """
+
+        M = self.M
+        K = len(self.Reactions.reaction_matrix)
+        G = np.zeros(shape=(M, M), dtype=self._array_dtype)
+        for k, value in self._G_ids.items():
+            for idx in value:
+                i,j = idx
+                # the indices of the species involved in the reaction
+                n_ids = self.Reactions.propensity_ids[k]
+                # h is the combinatorial factor for number of reactions attempting to fire
+                # At the moment this assumes maximum stoichiometric coefficient of 1
+                # TODO: generalize h for any coefficient
+                state_j = self._constitutive_states[j]
+                h = np.prod([state_j[n] for n in n_ids])
+                # lambda_ is the elementary reaction rate for the k'th reaction
+                lambda_ = self.Reactions._rates[k][1]
+                reaction_propensity = h * lambda_
+                G[i,j] = reaction_propensity
+        for i in range(M):
+            # fix the diagonal to be the negative sum of the column
+            G[i,i] = -np.sum(G[:,i])
+
+        return G
+
+    def _set_propagator_matrix(self, dt=1):
+        # dont really use this
+        with timeit() as matrix_exponential:
+            Q = expm(self._generator_matrix * dt)
+        self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
+        self.Q = Q
+        self._dt = dt
+
+    def run(self, start, stop, dt=1, overwrite=False, continued=False, run_name=None):
+        """runs the chemical master equation simulation
+
+        Parameters
+        ----------
+        start : int or float
+        stop : int or float
+        dt : int or float
+        overwrite : bool
+        continue : bool
+        run_name : str
+
+        """
+
+        if self._trajectory is not None and not overwrite:
+            if not continued:
+                raise ValueError("Data from previous run found in `self.trajectory`. "
+                                 "To write over this data, set the `overwrite=True`")
+
+        self._run(start, stop, dt, overwrite, continued, run_name)
+
+    def _run(self, start, stop, dt, overwrite, continued, run_name):
+
+        self._dt = dt
+        # using np.round to avoid floating point precision errors
+        n_timesteps = int(np.round((stop - start) / self._dt))
+        M = self.M
+
+        with timeit() as matrix_exponential:
+            if self._low_memory:
+                Q = expm(self._build_generator_matrix() * self._dt)
+            else:
+                Q = expm(self._generator_matrix * self._dt)
+        self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
+
+        trajectory = np.empty(shape=(n_timesteps, M), dtype=self._array_dtype)
+        if continued:
+            trajectory[0] = Q.dot(self._trajectory[-1])
+        else:
+            # fixing initial probability to be 1 in the intitial state
+            trajectory[0] = np.zeros(shape=M, dtype=self._array_dtype)
+            trajectory[0, 0] = 1.0
+
+        with timeit() as run_time:
+            for ts in range(n_timesteps - 1):
+                trajectory[ts + 1] = Q.dot(trajectory[ts])
+        self.timings['t_run'] = run_time.elapsed
+
+        self._trajectory = np.vstack([self._trajectory, trajectory]) if continued else trajectory
+
+    def reset_rates(self):
+        """resets `self.rates` to the values of the original config file"""
+        rates_from_config = [rate for rate in self.Reactions._original_config['reactions'].values()]
+        original_rates = {rate[0]: rate[1] for rate in rates_from_config}
+        self.update_rates(original_rates)
+
+    def update_rates(self, new_rates):
+        """updates `self.rates` and `self.G` with new transition rates"""
+
+        for new_rate_string, new_rate_value in new_rates.items():
+            for k, old_rate in enumerate(self._rates):
+                if old_rate[0] == new_rate_string:
+                    if old_rate[1] == new_rate_value:
+                        propensity_adjustment_factor = 1
+                    else:
+                        #TODO: handle the old_rate=0 case
+                        propensity_adjustment_factor = new_rate_value / old_rate[1]
+                    # make sure to do this after saving the propensity factor
+                    self._rates[k][1] = new_rate_value
+                    self.rates[new_rate_string] = new_rate_value
+                    # the generator matrix also changes when the rates change
+                    G_elements_affected = self._G_ids[k]
+                    for idx in G_elements_affected:
+                        i = tuple(idx)
+                        self._generator_matrix[i] = self._generator_matrix[i] * propensity_adjustment_factor
+                    break
+            else:
+                raise KeyError(f'{new_rate_string} is not a valid rate for this system. Valid rates'
+                               f'are listed in `self.rates`.')
+        # need to redo the diagonal elements as well
+        for m in range(len(self._generator_matrix)):
+            self._generator_matrix[m,m] = 0
+            self._generator_matrix[m,m] = -np.sum(self._generator_matrix[:, m])
+
+    def print_constitutive_states(self):
+        """creates a convenient readable list of the constitutive states"""
+
+        constitutive_states_strings: List[List[str]] = []
+        for state in self._constitutive_states:
+            word = []
+            for population_number, species in zip(state, self.species):
+                word.append(f'{population_number}{species}')
+            constitutive_states_strings.append(word)
+
+        return constitutive_states_strings
+
+    def print_generator_matrix(self):
+        """creates a convenient readable generator matrix with string names"""
+
+        M = len(self.G)
+        readable_G = [['0' for _ in range(M)] for _ in range(M)]
+        propensity_strings = self.Reactions.print_propensities()
+        for k in range(len(self.Reactions.reaction_matrix)):
+            for idx in self._G_ids[k]:
+                i,j = idx
+                readable_G[i][j] = propensity_strings[k]
+        for j in range(M):
+            diagonal = '-('
+            for i in range(M):
+                if readable_G[i][j] != '0':
+                    diagonal += f'{readable_G[i][j]} + '
+            readable_G[j][j] = diagonal[:-3] + ')'
+
+        return readable_G
+
+    def write(self, filename, mode='x', *args, **kwargs):
+        """writes the system and/or trajectory to an hdf5 file"""
+
+        with c3sH5IO(filename, mode, *args, **kwargs) as writer:
+
+            # write config
+            # Reactions
+            # constitutive states?
+            # G ids
+            # mu
+
+            pass
+            #writer.
+
+
 
 
 class SimulatorBase:
@@ -194,8 +660,7 @@ class SimulatorBase:
 class Gillespie(SimulatorBase):
     """The Gillespie stochastic simulation algorithm (SSA)."""
 
-    def __init__(self, cfg, filename=None, mode='x', system_name=None,
-                 initial_state=None, initial_populations=None, max_populations=None, empty=False):
+    def __init__(self, cfg, initial_state=None, initial_populations=None, max_populations=None, empty=False):
         """Uses Gillespie's stochastic simulation algorithm to generate a trajectory of a random walker that is
         defined by a molecular population vector.
 
@@ -203,9 +668,6 @@ class Gillespie(SimulatorBase):
         ----------
         cfg : str
             Path to yaml config file that specifies chemical reactions and kinetic rates
-        filename : str
-        mode : str, default='x'
-        system_name : str
         initial_state : list of int or array_like
         initial_populations : dict, default=None
             The initial population a particular species. If a species population is
@@ -215,9 +677,11 @@ class Gillespie(SimulatorBase):
 
         """
 
-        super(Gillespie, self).__init__(cfg=cfg, filename=filename, mode=mode, system_name=system_name,
-                                        initial_state=initial_state, initial_populations=initial_populations,
-                                        max_populations=max_populations, empty=empty)
+        super(Gillespie, self).__init__(cfg=cfg,
+                                        initial_state=initial_state,
+                                        initial_populations=initial_populations,
+                                        max_populations=max_populations,
+                                        empty=empty)
 
     def _get_propensity_vector(self, currState):
         """"""
@@ -330,15 +794,6 @@ class Gillespie(SimulatorBase):
 
         self._results = (trajectories, times)
 
-    '''def _write_to_file(self):
-        this_run_group = self._system_file.create_group(self._run_name)
-        trajectory_dset = this_run_group.create_dataset('trajectories', shape=self._results[0].shape, dtype=self._results[0].dtype)
-        trajectory_dset.attrs['rates'] = [rate[1] for rate in self._rates]
-        holding_times_dset = this_run_group.create_dataset('times', shape=self._results[1].shape, dtype=self._results[1].dtype)
-
-        trajectory_dset[:] = self._results[0]
-        holding_times_dset[:] = self._results[1]'''
-
     @property
     def trajectory(self):
         return self._results
@@ -351,251 +806,3 @@ class Gillespie(SimulatorBase):
     @Trajectories.setter
     def Trajectories(self, value):
         self._results = value
-
-
-class ChemicalMasterEquation(SimulatorBase, CalculationsMixin):
-    """Simulator class of the Chemical Master Equationn (CME)."""
-
-    def __init__(self, cfg=None, initial_state=None, initial_populations=None, max_populations=None, empty=False):
-        """Uses the Chemical Master Equation to propagate the time
-           evolution of the probability dynamics of a chemical system.
-
-        The only input required by the user is the config file that specifies the elementary chemical reactions
-        and kinetic rates, and the initial nonzero population numbers of each species. The constructor will
-        build the full constitutive state space in `self.constitutive_states` and the generator matrix in
-        `self.G`. To run the simulator, call the `self.run()` method with start, stop, and step
-        arguments. The full P(t) trajectory will be stored in `self.trajectory`.
-
-        Parameters
-        ----------
-        cfg : str
-            Path to yaml config file that specifies chemical reactions and kinetic rates
-        initial_state : list of int or array_like
-        initial_populations : dict, default=None
-            The initial population a particular species. If a species population is not specified,
-            it's initial population is taken to be 0.
-        max_populations : dict
-        empty : bool
-
-        """
-        super(ChemicalMasterEquation, self).__init__(cfg=cfg,
-                                                     initial_state=initial_state,
-                                                     initial_populations=initial_populations,
-                                                     max_populations=max_populations)
-        self._constitutive_states = None
-        self._generator_matrix = None
-        self.Q = None
-        self._max_populations = max_populations
-        self._trajectory = None
-        self._mutual_information = None
-
-        if not empty:
-            with timeit() as set_constitutive_states:
-                self._set_constitutive_states()
-            with timeit() as set_generator_matrix:
-                self._set_generator_matrix()
-            self.timings['t_set_constitutive_states'] = set_constitutive_states.elapsed
-            self.timings['t_set_generator_matrix'] = set_generator_matrix.elapsed
-
-    def _set_constitutive_states(self):
-        """Constructs all possible constitutive states from the intial state."""
-
-        constitutive_states = [self._initial_state]
-        population_limits = [
-            (self._species.index(species), max_count)
-            for species, max_count in self._max_populations.items()
-        ] if self._max_populations else False
-
-        self._G_ids = {k: [] for k in range(len(self._reaction_matrix))}
-
-        # newly_added keeps track of the most recently accepted states
-        newly_added_states = [np.array(self._initial_state)]
-        while True:
-            accepted_candidate_states = []
-            for state in newly_added_states:
-                i = int(np.argwhere(np.all(constitutive_states == state, axis=1)))
-                # the idea here is that for each of the recently added states,
-                # we iterate through each reaction to see if a transition is possible
-                for k, reaction in enumerate(self._reaction_matrix):
-                    # gives a boolean array for which reactants are required
-                    reactants_required = np.argwhere(reaction < 0).T
-                    reactants_available = state > 0
-                    # if this new state has all of the reactants available for the reaction
-                    if np.all(reactants_available[reactants_required]):
-                        # apply the reaction and add the new state into our list of constitutive
-                        # states only if it is a new state that has not been previously visited
-                        new_candidate_state = state + reaction
-                        is_actually_new_state = list(new_candidate_state) not in constitutive_states
-                        does_not_exceed_max_population = all([new_candidate_state[i] <= max_count for i, max_count
-                                                              in population_limits]) if population_limits else True
-                        if does_not_exceed_max_population:
-                            if is_actually_new_state:
-                                j = len(constitutive_states)
-                                accepted_candidate_states.append(new_candidate_state)
-                                constitutive_states.append(list(new_candidate_state))
-                            else:
-                                j = int(np.argwhere(np.all(constitutive_states == new_candidate_state, axis=1)))
-                            self._G_ids[k].append((j,i))
-            # replace the old set of new states with these ones
-            newly_added_states = accepted_candidate_states
-            # once we reach the point where no new states are accessible we terminate
-            if not newly_added_states:
-                break
-
-        self._constitutive_states = np.array(constitutive_states, dtype=np.int32)
-
-    def _set_generator_matrix(self):
-        """Constructs the generator matrix.
-
-        The generator matrix is an MxM matrix where M is the total number of states given
-        by `len(self.constitutive_states)`.
-
-        """
-
-        M = len(self._constitutive_states)
-        K = len(self._reaction_matrix)
-        G = np.zeros(shape=(M, M), dtype=np.float64)
-        for k, value in self._G_ids.items():
-            for idx in value:
-                i,j = idx
-                # the indices of the species involved in the reaction
-                n_ids = self._propensity_indices[k]
-                # h is the combinatorial factor for number of reactions attempting to fire
-                # At the moment this assumes maximum stoichiometric coefficient of 1
-                # TODO: generalize h for any coefficient
-                state_j = self._constitutive_states[j]
-                h = np.prod([state_j[n] for n in n_ids])
-                # lambda_ is the elementary reaction rate for the k'th reaction
-                lambda_ = self._rates[k][1]
-                reaction_propensity = h * lambda_
-                G[i,j] = reaction_propensity
-        for i in range(M):
-            # fix the diagonal to be the negative sum of the column
-            G[i,i] = -np.sum(G[:,i])
-        self._generator_matrix = G
-
-    def _set_propagator_matrix(self, dt=1):
-        with timeit() as matrix_exponential:
-            Q = expm(self._generator_matrix * dt)
-        self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
-        self.Q = Q
-        self._dt = dt
-
-    def get_readable_states(self):
-        """creates a convenient human readable list of the constitutive states"""
-
-        constitutive_states_strings: List[List[str]] = []
-        for state in self._constitutive_states:
-            word = []
-            for population_number, species in zip(state, self.species):
-                word.append(f'{population_number}{species}')
-            constitutive_states_strings.append(word)
-
-        return constitutive_states_strings
-
-    def get_readable_G(self):
-        """creates a readable generator matrix with string names"""
-
-        M = len(self.G)
-        readable_G = [['0' for _ in range(M)] for _ in range(M)]
-        propensity_strings = self.get_propensity_strings()
-        for k in range(len(self.reaction_matrix)):
-            for idx in self._G_ids[k]:
-                i,j = idx
-                readable_G[i][j] = propensity_strings[k]
-        for j in range(M):
-            diagonal = '-('
-            for i in range(M):
-                if readable_G[i][j] != '0':
-                    diagonal += f'{readable_G[i][j]} + '
-            readable_G[j][j] = diagonal[:-3] + ')'
-
-        return readable_G
-
-    def update_rates(self, new_rates):
-        """updates `self.rates` and `self.G` with new transition rates"""
-
-        for new_rate_string, new_rate_value in new_rates.items():
-            for k, old_rate in enumerate(self._rates):
-                if old_rate[0] == new_rate_string:
-                    if old_rate[1] == new_rate_value:
-                        propensity_adjustment_factor = 1
-                    else:
-                        propensity_adjustment_factor = new_rate_value / old_rate[1]
-                    # make sure to do this after saving the propensity factor
-                    self._rates[k][1] = new_rate_value
-                    # the generator matrix also changes when the rates change
-                    G_elements_affected = self._G_ids[k]
-                    for idx in G_elements_affected:
-                        i = tuple(idx)
-                        self._generator_matrix[i] = self._generator_matrix[i] * propensity_adjustment_factor
-                    break
-            else:
-                raise KeyError(f'{new_rate_string} is not a valid rate for this system. The new rate'
-                               f'must be one of the rates specified in the original config file.')
-        # need to redo the diagonal elements as well
-        for m in range(len(self._generator_matrix)):
-            self._generator_matrix[m,m] = 0
-            self._generator_matrix[m,m] = -np.sum(self._generator_matrix[:, m])
-
-    def run(self, start, stop, step=1, run_name=None, overwrite=False, continued=False):
-        """Runs the chemical master equation simulation.
-
-        Parameters
-        ----------
-        start : int or float
-        stop  : int or float
-        step  : int or float
-        run_name : str
-        overwrite : bool
-
-        """
-
-        if self._trajectory is not None and not overwrite:
-            if not continued:
-                raise ValueError("Data from previous run found in `self.P_trajectory`. "
-                                 "To write over this data, set the `overwrite=True`")
-
-        self._dt = step
-        # using np.round to avoid floating point precision errors
-        n_timesteps = int(np.round((stop - start) / self._dt))
-        M = len(self._constitutive_states)
-
-        with timeit() as matrix_exponential:
-            Q = expm(self._generator_matrix * self._dt)
-            #self.Q = Q
-        self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
-
-        trajectory = np.empty(shape=(n_timesteps, M), dtype=np.float64)
-        if continued:
-            trajectory[0] = Q.dot(self._trajectory[-1])
-        else:
-            # fixing initial probability to be 1 in the intitial state
-            trajectory[0] = np.zeros(shape=M, dtype=np.float64)
-            trajectory[0, 0] = 1
-
-        with timeit() as run_time:
-            for ts in range(n_timesteps - 1):
-                trajectory[ts + 1] = Q.dot(trajectory[ts])
-        self.timings['t_run'] = run_time.elapsed
-
-        if continued:
-            self._trajectory = np.vstack([self._trajectory, trajectory])
-        else:
-            self._trajectory = trajectory
-
-    @property
-    def states(self):
-        return self._constitutive_states
-    @states.setter
-    def states(self, value):
-        self._constitutive_states = value
-    @property
-    def G(self):
-        return self._generator_matrix
-    @property
-    def trajectory(self):
-        return self._trajectory
-    @trajectory.setter
-    def trajectory(self, value):
-        self._trajectory = value

@@ -1,25 +1,73 @@
 import h5py
-import numpy as np
 import c3s
+import numpy as np
 
 
-class c3sFile(h5py.File):
+def Group_to_Dict(group):
+    """stores nested hdf5 groups into python dictionary
 
-    def __init__(self, filename, mode=None):
+    needs work.."""
 
-        super(c3sFile, self).__init__(filename, mode)
+    dictionary = {}
+    def recurseGroup(group):
+        for key in group:
+            if isinstance(group, h5py.Group):
+                dictionary[key] = list(group[key].keys())
+                # recurseGroup(g[key])
+    return dictionary
 
 
-    def _initalize_datasets(self):
-        pass
+def Dict_to_Group(dictionary, group):
+    """stores python dictionary into nested hdf5 groups"""
+
+    def recurseDict(d, extended_key=None):
+        for key, value in d.items():
+            if isinstance(value, dict):
+                fullpath = f'{extended_key}/{key}' if extended_key else f'{key}'
+                recurseDict(value, extended_key=fullpath)
+            else:
+                fullpath = f'{extended_key}/{key}' if extended_key else f'{key}'
+                group.create_dataset(fullpath, data=value)
+
+    recurseDict(dictionary)
+
+
+class c3sH5IO:
+
+    def __init__(self, filename, mode, *args, **kwargs):
+
+        self.filename = filename
+        self.mode = mode
+
+        self._file = self._open_file(filename, mode)
+
+
+
+    def save_system(self):
+        ...
+
+    def _open_file(self, filename, mode):
+        return h5py.File(filename, mode, track_order=True)
+
+    def create_group(self, name):
+        self._file.create_group(name)
+
+    def create_dataset(self, name, data):
+        self._file.create_dataset(name, data=data)
+
+    def write_original_config(self, config_file):
+        ...
+
+
+
 
 
 def write_h5(filename, system, mode='a', store_trajectory=False, runid=None):
 
     if mode == 'w':
-        with c3sFile(filename, mode=mode) as root:
+        with h5py.File(filename, mode=mode) as root:
             root.require_group('cfg/reactions')
-            for reaction, rate in system._config_dictionary['reactions'].items():
+            for reaction, rate in system.Reactions._original_config['reactions'].items():
                 root.create_dataset(f"cfg/reactions/{reaction.replace(' ', '')}/{rate[0]}", data=rate[1])
 
             root.require_dataset('constitutive_states', data=system.states, shape=system.states.shape, dtype=system.states.dtype)
@@ -40,11 +88,8 @@ def write_h5(filename, system, mode='a', store_trajectory=False, runid=None):
                     count = np.array(value)
                     root['max_populations'].require_dataset(f'{species}', data=count, shape=count.shape, dtype=count.dtype)
 
-                #root.create_dataset('propagator_matrix', data=system.Q)
-                #root['propagator_matrix'].attrs['dt'] = system._dt
-
     if store_trajectory:
-        with c3sFile(filename, mode=mode) as root:
+        with h5py.File(filename, mode=mode) as root:
             root.create_group(f'runs/{runid}')
             if store_trajectory:
                 traj = system._trajectory
@@ -52,15 +97,11 @@ def write_h5(filename, system, mode='a', store_trajectory=False, runid=None):
                 for rate, value in system.rates.items():
                     root[f'runs/{runid}/trajectory'].attrs[rate] = value
 
-def _dict_to_dset(f, group):
-    pass
 
-def _dset_to_dict():
-    pass
 
-def read_h5(filename, cfg, mode='r', trajectory=False, runid=None):
+def read_h5(filename, cfg, mode='r', trajectory=False, runid=None, low_memory=False):
 
-    with c3sFile(filename, mode=mode) as root:
+    with h5py.File(filename, mode=mode) as root:
 
         '''_reaction_dict = {}
         for reaction in root['cfg/reactions']:
@@ -77,12 +118,11 @@ def read_h5(filename, cfg, mode='r', trajectory=False, runid=None):
             max_populations=None
         G_ids = {int(key): root[f'G_ids/{key}'][()].tolist() for key in root['G_ids']}
 
-        system = c3s.ChemicalMasterEquation(cfg=cfg, initial_populations=initial_populations, max_populations=max_populations,
-                                            empty=True)
+        system = c3s.ChemicalMasterEquation(config_file=cfg, initial_populations=initial_populations, max_populations=max_populations,
+                                            empty=True, low_memory=low_memory)
         system._G_ids = G_ids
         system._constitutive_states = root['constitutive_states'][()]
-        #system.Q = root['propagator_matrix'][()]
-        #system._dt = root['propagator_matrix'].attrs['dt']
+        system.M = len(system._constitutive_states)
         if trajectory:
             system._trajectory = root[f'runs/{runid}/trajectory'][()]
 

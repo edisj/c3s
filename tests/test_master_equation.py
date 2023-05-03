@@ -22,10 +22,10 @@ class TestH5IO:
         return str(tmpdir) + 'c3s_write_test.h5'
 
     def test_file_io(self, outfile):
-        system = ChemicalMasterEquation(cfg='config_files/2_isolated_switches.yml',
+        system = ChemicalMasterEquation(config_file='config_files/2_isolated_switches.yml',
                                         initial_populations={'A': 1, 'B': 1})
-        start, stop, step = 0, 1, 0.01
-        system.run(start, stop, step)
+        start, stop, dt = 0, 1, 0.01
+        system.run(start, stop, dt)
         #system._set_propagator_matrix()
 
         write_h5(outfile, system, mode='w')
@@ -47,17 +47,17 @@ class TestBinarySystem:
 
     @pytest.fixture(scope='class')
     def binary(self):
-        system = ChemicalMasterEquation(cfg='config_files/binary.yml', initial_populations={'A':1})
-        start, stop, step = 0, 1, 0.01
-        system.run(start, stop, step)
-        yield system
+        system = ChemicalMasterEquation(config_file='config_files/binary.yml', initial_populations={'A':1})
+        start, stop, dt = 0, 1, 0.01
+        system.run(start, stop, dt)
+        return system
 
     @pytest.fixture(scope='class')
     def binary_many_body(self):
-        system = ChemicalMasterEquation(cfg='config_files/binary.yml', initial_populations={'A':3})
-        start, stop, step = 0, 1, 0.01
-        system.run(start, stop, step)
-        yield system
+        system = ChemicalMasterEquation(config_file='config_files/binary.yml', initial_populations={'A':3})
+        start, stop, dt = 0, 1, 0.01
+        system.run(start, stop, dt)
+        return system
 
     def test_species(self, binary):
         correct_species = ['A', 'B']
@@ -70,7 +70,7 @@ class TestBinarySystem:
     def test_reaction_matrix(self,binary):
         correct_reaction_matrix = np.array([[-1, 1],
                                             [ 1,-1]])
-        assert_equal(binary.reaction_matrix, correct_reaction_matrix)
+        assert_equal(binary.Reactions.reaction_matrix, correct_reaction_matrix)
 
     def test_states(self, binary):
         correct_states = np.array([[1,0],
@@ -129,9 +129,9 @@ class TestBinarySystem:
     def test_continued(self, binary):
 
         traj1 = binary.trajectory
-        start, stop, step = 0, 0.5, 0.01
-        binary.run(start, stop, step, overwrite=True)
-        binary.run(start, stop, step, continued=True)
+        start, stop, dt = 0, 0.5, 0.01
+        binary.run(start, stop, dt=dt, overwrite=True)
+        binary.run(start, stop, dt=dt, continued=True)
         traj2 = binary.trajectory
 
         assert_array_equal(traj1, traj2)
@@ -141,10 +141,10 @@ class Test2IsolatedSwitch:
 
     @pytest.fixture(scope='class')
     def isolated_switches(self):
-        system = ChemicalMasterEquation(cfg='config_files/2_isolated_switches.yml', initial_populations={'A':1, 'B':1})
-        start, stop, step = 0, 1, 0.01
-        system.run(start, stop, step)
-        yield system
+        system = ChemicalMasterEquation(config_file='config_files/2_isolated_switches.yml', initial_populations={'A':1, 'B':1})
+        start, stop, dt = 0, 1, 0.01
+        system.run(start, stop, dt)
+        return system
 
     def test_mutual_information_many_body(self, isolated_switches):
 
@@ -164,12 +164,12 @@ class TestAllosteryModel1:
 
     @pytest.fixture(scope='class')
     def allostery_model(self):
-        system = ChemicalMasterEquation(cfg=self.cfg,
+        system = ChemicalMasterEquation(config_file=self.cfg,
                                         initial_populations={'A':1, 'B':1, 'S': 1},
                                         max_populations={'S':1, 'P':1})
-        start, stop, step = 0, 1, 0.01
-        system.run(start, stop, step)
-        yield system
+        start, stop, dt = 0, 1, 0.01
+        system.run(start, stop, dt)
+        return system
 
     def test_species(self, allostery_model):
         correct_species = ['A', 'AS', 'B', 'BP', 'P', 'S']
@@ -184,7 +184,7 @@ class TestAllosteryModel1:
             [ 0,  0,  1, -1,  1,  0],
             [ 0,  0,  0,  0, -1,  0],
             [ 0,  0,  0,  0,  0,  1]])
-        assert_array_equal(correct_matrx, allostery_model.reaction_matrix)
+        assert_array_equal(correct_matrx, allostery_model.Reactions.reaction_matrix)
 
     def test_max_population(self):
 
@@ -192,7 +192,7 @@ class TestAllosteryModel1:
         maxP = [1, 2, 3]
 
         for S, P in zip(maxS, maxP):
-            system = ChemicalMasterEquation(cfg=self.cfg,
+            system = ChemicalMasterEquation(config_file=self.cfg,
                                            initial_populations={'A':1, 'B':1, 'S': 1},
                                            max_populations={'S':S, 'P':P})
             i = system.species.index('S')

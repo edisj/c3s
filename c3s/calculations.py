@@ -13,8 +13,8 @@ class CalculationsMixin:
     _rates: List
     _system_name: str
     _run_name: str
-    _constitutive_states: np.ndarray
-    _species: List[str]
+    #_constitutive_states: np.ndarray
+    species: List[str]
     _dt: float
     G: np.ndarray
     trajectory: np.ndarray
@@ -83,7 +83,7 @@ class CalculationsMixin:
         if isinstance(molecules, str):
             molecules = [molecules]
         # indices that correspond to the selected molecular species in the ordered species list
-        ids = [self._species.index(n) for n in molecules]
+        ids = [self.species.index(n) for n in molecules]
         truncated_points = np.array(self._constitutive_states)[:, ids]
 
         Delta_vectors: Dict[tuple, np.ndarray] = {}
@@ -287,7 +287,7 @@ class CalculationsMixin:
         if isinstance(molecules, str):
             molecules = [molecules]
         # indices that correspond to the selected molecular species in the ordered species list
-        ids = [self._species.index(n) for n in sorted(molecules)]
+        ids = [self.species.index(n) for n in sorted(molecules)]
         truncated_points = np.array(self._constitutive_states)[:, ids]
 
         # keys are tuple coordinates of the marginal distrubtion

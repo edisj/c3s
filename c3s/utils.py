@@ -20,6 +20,7 @@ class timeit:
         self.elapsed = end_time - self._start_time
         return False
 
+
 def split_tasks_for_workers(N_tasks, N_workers, rank):
     """Makes approximately even sized slices for some set of parallel workers
     to use as indices for their local block of work."""
