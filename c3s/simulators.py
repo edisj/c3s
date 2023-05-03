@@ -1,53 +1,50 @@
-import math
 import yaml
 import copy
-import random
-import numpy as np
 from typing import List, Dict
 from collections import namedtuple
+from pathlib import Path
+
+import math
+import random
+import numpy as np
 from scipy.sparse.linalg import expm
+
 from .calculations import CalculationsMixin
 from .utils import timeit
-from c3s.h5io import c3sH5IO
+from .h5io import CMEWriter
 
 
 class Reactions:
     """meant to be used as a component class via composition for the simulator classes"""
 
-    def __init__(self, config_file):
+    def __init__(self, config):
         """reads the config file and sets various important attributes"""
 
-        with open(config_file) as yaml_file:
-            self._original_config = yaml.load(yaml_file, Loader=yaml.Loader)
-        self._rates, self._reactants, self._products = self._set_rates()
-        self. _species = self._set_species_vector()
+        # for reading configs from h5 file
+        if isinstance(config, dict):
+            self._original_config = config
+        else:
+            config = Path(config)
+            with open(config) as yaml_file:
+                self._original_config = yaml.load(yaml_file, Loader=yaml.Loader)
+        self._rates, self._reaction_strings, self._reactants, self._products = self._set_rates()
+        self._species = self._set_species_vector()
         self._reaction_matrix = self._set_reaction_matrix()
         self._propensity_ids = self._set_reaction_propensities()
 
     @property
     def rates(self):
-        # rates is Dict, _rates is List
+        """`self._rates` is len(K) List[List[str, float]] where k'th element gives
+        the name and value of the rate constant for the k'th reaction
+        """
         return dict(self._rates)
     @rates.setter
     def rates(self, value):
         self._rates = value
 
     @property
-    def reactants(self) -> List[str]:
-        return self._reactants
-    @reactants.setter
-    def reactants(self, value):
-        self._reactants = value
-
-    @property
-    def products(self) -> List[str]:
-        return self._products
-    @products.setter
-    def products(self, value):
-        self._products = value
-
-    @property
     def species(self) -> List[str]:
+        """`self.species` is len(N) List[str] where n'th element is the name of the n'th species"""
         return self._species
     @species.setter
     def species(self, value):
@@ -55,6 +52,9 @@ class Reactions:
 
     @property
     def reaction_matrix(self) -> np.ndarray:
+        """`self.reaction_matrix` is shape(K,N) array where the [k,n] element
+        gives the change in the n'th species for the k'th reaction
+        """
         return self._reaction_matrix
     @reaction_matrix.setter
     def reaction_matrix(self, value):
@@ -62,30 +62,26 @@ class Reactions:
 
     @property
     def propensity_ids(self):
+        """`self._propensenity_ids` is len(K) List[List[int]] whose k'th element
+         gives the indices of `self.species` that are involved in the k'th reaction
+         """
         return self._propensity_ids
     @propensity_ids.setter
     def propensity_ids(self, value):
         self._propensity_ids = value
 
     def _set_rates(self):
-        """create `self.rates` which is len(K) List[List[str, int]] where k'th element gives
-        the name and value of the rate constant for the k'th reaction"""
-
-        reactants = []
-        products = []
-        rates = []
-        # need to use deepcopy because `self.update_rates()` will change rates in self._original_config
+        rates, reaction_strings, reactants, products = [], [], [], []
+        # deepcopy because update_rates() would otherwise change rates in self._original_config
         config_data = copy.deepcopy(self._original_config)
         for reaction, rate_list in config_data['reactions'].items():
+            rates.append(rate_list)
+            reaction_strings.append(reaction)
             reactants.append(reaction.replace(' ', '').split('->')[0].split('+'))
             products.append(reaction.replace(' ', '').split('->')[1].split('+'))
-            rates.append(rate_list)
-
-        return rates, reactants, products
+        return rates, reaction_strings, reactants, products
 
     def _set_species_vector(self):
-        """creates `self.species` which is len(N) List[str] where n'th element is the name of the n'th species"""
-
         species: List[str] = []
         for k, (reactants, products) in enumerate(zip(self._reactants, self._products)):
             # len(reactants) is not necessarily = len(products) so we have to loop over each
@@ -94,18 +90,13 @@ class Reactions:
                 species.append(molecule)
             for molecule in products:
                 species.append(molecule)
-
         while '0' in species:
             species.remove('0')
         # remove duplicates and sort
         species = sorted(list(set(species)))
-
         return species
 
     def _set_reaction_matrix(self):
-        """creates `self.reaction_matrix` which is shape(K,N) array where the [k,n] element
-        gives the change in the n'th species for the k'th reaction"""
-
         N_reactions = len(self._reactants)
         N_species = len(self._species)
         reaction_matrix = np.zeros(shape=(N_reactions, N_species), dtype=np.int32)
@@ -116,17 +107,12 @@ class Reactions:
                     reaction[n] += -1
                 if species in products:
                     reaction[n] += 1
-
         return reaction_matrix
 
     def _set_reaction_propensities(self):
-        """creates `self._propensenity_ids` which is len(K) List[List[int]] whose k'th element
-         gives the indices of `self._species` that are involved in the k'th reaction"""
-
         reaction_matrix = self._reaction_matrix
         N, K = len(self._species), len(reaction_matrix)
         propensity_ids = [[n for n in range(N) if reaction_matrix[k, n] < 0] for k in range(K)]
-
         return propensity_ids
 
     def print_propensities(self):
@@ -160,7 +146,7 @@ class ChemicalMasterEquation(CalculationsMixin):
     np.seterr(under='raise', over='raise')
 
     def __init__(self,
-                 config_file=None,
+                 config=None,
                  initial_state=None,
                  initial_populations=None,
                  max_populations=None,
@@ -169,7 +155,7 @@ class ChemicalMasterEquation(CalculationsMixin):
         """
         Parameters
         ----------
-        config_file : str
+        config :
             path to yaml config file that specifies chemical reactions and elementary rates
         initial_state : List[int] or array
             initial collapsed state vector, if initial populations is not given
@@ -179,14 +165,16 @@ class ChemicalMasterEquation(CalculationsMixin):
         max_populations : dict, default=None
             maximum allowable populaation for some species
         empty : bool, default=False
-        low_memory : bool
+            flag to leave attributes empty in the case of reading from file
+        low_memory : bool, default=False
+            flag to use 32 bit precision and to not save constitutive states in memeory
 
         """
 
-        self.Reactions = Reactions(config_file)
-        self.species = self.Reactions.species
-        self.rates = self.Reactions.rates
-        self._rates = self.Reactions._rates
+        self.reactions = Reactions(config)
+        self.species = self.reactions.species
+        self.rates = self.reactions.rates
+        self._rates = self.reactions._rates
         if initial_state and initial_populations:
             raise ValueError("Do not specify both the `initial_state` and `initial_populations` parameters. "
                              "Use one or the other.")
@@ -199,6 +187,7 @@ class ChemicalMasterEquation(CalculationsMixin):
 
         self._constitutive_states = None
         self._generator_matrix = None
+        self._nonzero_G_elements = None
         self._trajectory = None
 
         # dictionary to hold timings of various codeblocks for benchmarking
@@ -218,9 +207,13 @@ class ChemicalMasterEquation(CalculationsMixin):
     @states.setter
     def states(self, value):
         self._constitutive_states = value
+
     @property
     def G(self):
+        """the generator matrix is an MxM matrix where M is the
+        total number of states given by `len(self.constitutive_states)`"""
         return self._generator_matrix
+
     @property
     def trajectory(self):
         return self._trajectory
@@ -254,7 +247,7 @@ class ChemicalMasterEquation(CalculationsMixin):
         self._initial_state = initial_state
 
     def _build_constitutive_states(self):
-        """generates all possible constitutive states from the intial state."""
+        """iteratively generates all possible constitutive states from the intial state"""
 
         constitutive_states = [self._initial_state]
         population_limits = [
@@ -262,7 +255,7 @@ class ChemicalMasterEquation(CalculationsMixin):
             for species, max_count in self._max_populations.items()
         ] if self._max_populations else False
 
-        self._G_ids = {k: [] for k in range(len(self.Reactions.reaction_matrix))}
+        self._nonzero_G_elements = {k: [] for k in range(len(self.reactions.reaction_matrix))}
 
         # newly_added keeps track of the most recently accepted states
         newly_added_states = [np.array(self._initial_state)]
@@ -272,7 +265,7 @@ class ChemicalMasterEquation(CalculationsMixin):
                 i = int(np.argwhere(np.all(constitutive_states == state, axis=1)))
                 # the idea here is that for each of the recently added states,
                 # we iterate through each reaction to see if a transition is possible
-                for k, reaction in enumerate(self.Reactions.reaction_matrix):
+                for k, reaction in enumerate(self.reactions.reaction_matrix):
                     # gives a boolean array for which reactants are required
                     reactants_required = np.argwhere(reaction < 0).T
                     reactants_available = state > 0
@@ -291,7 +284,7 @@ class ChemicalMasterEquation(CalculationsMixin):
                                 constitutive_states.append(list(new_candidate_state))
                             else:
                                 j = int(np.argwhere(np.all(constitutive_states == new_candidate_state, axis=1)))
-                            self._G_ids[k].append((j,i))
+                            self._nonzero_G_elements[k].append((j,i))
 
             # replace the old set of new states with new batch
             newly_added_states = accepted_candidate_states
@@ -306,28 +299,23 @@ class ChemicalMasterEquation(CalculationsMixin):
         self._generator_matrix = self._build_generator_matrix()
 
     def _build_generator_matrix(self):
-        """Constructs the generator matrix.
-
-        The generator matrix is an MxM matrix where M is the total number of states given
-        by `len(self.constitutive_states)`.
-
-        """
+        """constructs the generator matrix"""
 
         M = self.M
-        K = len(self.Reactions.reaction_matrix)
+        K = len(self.reactions.reaction_matrix)
         G = np.zeros(shape=(M, M), dtype=self._array_dtype)
-        for k, value in self._G_ids.items():
+        for k, value in self._nonzero_G_elements.items():
             for idx in value:
                 i,j = idx
                 # the indices of the species involved in the reaction
-                n_ids = self.Reactions.propensity_ids[k]
+                n_ids = self.reactions.propensity_ids[k]
                 # h is the combinatorial factor for number of reactions attempting to fire
                 # At the moment this assumes maximum stoichiometric coefficient of 1
                 # TODO: generalize h for any coefficient
                 state_j = self._constitutive_states[j]
                 h = np.prod([state_j[n] for n in n_ids])
                 # lambda_ is the elementary reaction rate for the k'th reaction
-                lambda_ = self.Reactions._rates[k][1]
+                lambda_ = self.reactions._rates[k][1]
                 reaction_propensity = h * lambda_
                 G[i,j] = reaction_propensity
         for i in range(M):
@@ -350,11 +338,16 @@ class ChemicalMasterEquation(CalculationsMixin):
         Parameters
         ----------
         start : int or float
+            initial time value
         stop : int or float
-        dt : int or float
-        overwrite : bool
-        continue : bool
-        run_name : str
+            final time value
+        dt : int or float, default=1
+            size of timestep that multiplies into generator matrix
+        overwrite : bool, default=False
+            set to `True` to rerun a simulation from scratch
+        continued : bool, default=False
+            set to `True` to concatenate separate trajectory segemnts
+        run_name : str, default=None
 
         """
 
@@ -367,16 +360,15 @@ class ChemicalMasterEquation(CalculationsMixin):
 
     def _run(self, start, stop, dt, overwrite, continued, run_name):
 
-        self._dt = dt
         # using np.round to avoid floating point precision errors
-        n_timesteps = int(np.round((stop - start) / self._dt))
+        n_timesteps = int(np.round((stop - start) / dt))
         M = self.M
 
         with timeit() as matrix_exponential:
             if self._low_memory:
-                Q = expm(self._build_generator_matrix() * self._dt)
+                Q = expm(self._build_generator_matrix() * dt)
             else:
-                Q = expm(self._generator_matrix * self._dt)
+                Q = expm(self._generator_matrix * dt)
         self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
 
         trajectory = np.empty(shape=(n_timesteps, M), dtype=self._array_dtype)
@@ -393,10 +385,12 @@ class ChemicalMasterEquation(CalculationsMixin):
         self.timings['t_run'] = run_time.elapsed
 
         self._trajectory = np.vstack([self._trajectory, trajectory]) if continued else trajectory
+        self._dt = dt
 
     def reset_rates(self):
         """resets `self.rates` to the values of the original config file"""
-        rates_from_config = [rate for rate in self.Reactions._original_config['reactions'].values()]
+
+        rates_from_config = [rate for rate in self.reactions._original_config['reactions'].values()]
         original_rates = {rate[0]: rate[1] for rate in rates_from_config}
         self.update_rates(original_rates)
 
@@ -415,7 +409,7 @@ class ChemicalMasterEquation(CalculationsMixin):
                     self._rates[k][1] = new_rate_value
                     self.rates[new_rate_string] = new_rate_value
                     # the generator matrix also changes when the rates change
-                    G_elements_affected = self._G_ids[k]
+                    G_elements_affected = self._nonzero_G_elements[k]
                     for idx in G_elements_affected:
                         i = tuple(idx)
                         self._generator_matrix[i] = self._generator_matrix[i] * propensity_adjustment_factor
@@ -429,7 +423,7 @@ class ChemicalMasterEquation(CalculationsMixin):
             self._generator_matrix[m,m] = -np.sum(self._generator_matrix[:, m])
 
     def print_constitutive_states(self):
-        """creates a convenient readable list of the constitutive states"""
+        """generates a convenient readable list of the constitutive states"""
 
         constitutive_states_strings: List[List[str]] = []
         for state in self._constitutive_states:
@@ -441,13 +435,13 @@ class ChemicalMasterEquation(CalculationsMixin):
         return constitutive_states_strings
 
     def print_generator_matrix(self):
-        """creates a convenient readable generator matrix with string names"""
+        """generates a convenient readable generator matrix with string names"""
 
         M = len(self.G)
         readable_G = [['0' for _ in range(M)] for _ in range(M)]
-        propensity_strings = self.Reactions.print_propensities()
-        for k in range(len(self.Reactions.reaction_matrix)):
-            for idx in self._G_ids[k]:
+        propensity_strings = self.reactions.print_propensities()
+        for k in range(len(self.reactions.reaction_matrix)):
+            for idx in self._nonzero_G_elements[k]:
                 i,j = idx
                 readable_G[i][j] = propensity_strings[k]
         for j in range(M):
@@ -459,21 +453,40 @@ class ChemicalMasterEquation(CalculationsMixin):
 
         return readable_G
 
-    def write(self, filename, mode='x', *args, **kwargs):
-        """writes the system and/or trajectory to an hdf5 file"""
+    def _write_system_info(self, filename, mode):
+        with CMEWriter(filename, system=self, mode=mode) as W:
+            # basic reaction info
+            W._dump_config()
+            if not self._low_memory:
+                W._create_dataset('constitutive_states', data=self.states)
+            for k, indices in self._nonzero_G_elements.items():
+                W._create_dataset(f'nonzero_G_elements/{k}', data=np.array(indices))
+            for species, count in self._initial_populations.items():
+                W._create_dataset(f'initial_populations/{species}', data=np.array(count))
+            if self._max_populations:
+                for species, count in self._max_populations.items():
+                    W._create_dataset(f'max_populations/{species}', data=np.array(count))
 
-        with c3sH5IO(filename, mode, *args, **kwargs) as writer:
+    def _write_trajectory(self, filename, mode, trajectory_name):
+        with CMEWriter(filename, system=self, mode=mode) as W:
+            traj_group = W._require_group('trajectories')
+            if trajectory_name is None:
+                trajectory_name = f'trajectory00{len(traj_group) + 1}'
+            W._create_dataset(f'trajectories/{trajectory_name}/trajectory', data=self.trajectory)
+            for rate, value in self.rates.items():
+                rate_group = W._create_group(f'trajectories/{trajectory_name}/rates/{rate}')
+                W._set_attr(rate_group, name='value', value=value)
 
-            # write config
-            # Reactions
-            # constitutive states?
-            # G ids
-            # mu
+    def write(self, filename, mode='r+', trajectory_name=None):
+        """writes simulation data to an hdf5 file"""
 
-            pass
-            #writer.
+        if self.trajectory is None:
+            raise ValueError("no data in `self.trajectory`")
+        if not Path(filename).exists():
+            # if this is a fresh file
+            self._write_system_info(filename, mode='x')
 
-
+        self._write_trajectory(filename, mode, trajectory_name)
 
 
 class SimulatorBase:

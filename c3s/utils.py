@@ -45,6 +45,7 @@ def split_tasks_for_workers(N_tasks, N_workers, rank):
 
     return start, stop, blocksize
 
+
 def latexify_string(string):
     """helper function to prepare strings for raw string format
 
@@ -64,6 +65,7 @@ def latexify_string(string):
     string = '$' + string + '$'
 
     return string
+
 
 class ProgressBar(tqdm):
     """tqdm progress bar with the default settings I want."""
