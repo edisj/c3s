@@ -46,27 +46,6 @@ def split_tasks_for_workers(N_tasks, N_workers, rank):
     return start, stop, blocksize
 
 
-def latexify_string(string):
-    """helper function to prepare strings for raw string format
-
-    this function still needs some work...
-
-    """
-
-    for symbol in ('_', '^'):
-        if symbol in string:
-            split_string = string.split(symbol)
-            assert len(split_string) == 2
-            # need lots of {} for f-string formatting
-            string = split_string[0] + symbol + f'{{{split_string[1]}}}'
-    if '*' in string:
-        string = string.replace('*', '^*')
-    # dress with $
-    string = '$' + string + '$'
-
-    return string
-
-
 class ProgressBar(tqdm):
     """tqdm progress bar with the default settings I want."""
 

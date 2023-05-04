@@ -1,6 +1,7 @@
 """A tool for stochastically simulating chemcial systems"""
 
-from .simulators import ChemicalMasterEquation, Gillespie
+from .simulators.cme import ChemicalMasterEquation
+from .simulators.gillespie import Gillespie
 
 # Handle versioneer
 from ._version import get_versions
