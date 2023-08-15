@@ -68,6 +68,7 @@ class ChemicalMasterEquation(CalculationsMixin):
         self._generator_matrix = None
         self._nonzero_G_elements = None
         self._trajectory = None
+        self.Q = None
 
         # dictionary to hold timings of various codeblocks for benchmarking
         self.timings: Dict[str, float] = {}
@@ -202,7 +203,7 @@ class ChemicalMasterEquation(CalculationsMixin):
 
         return G
 
-    def _set_propagator_matrix(self, dt=1):
+    def _set_propagator_matrix(self, dt):
         # dont really use this
         with timeit() as matrix_exponential:
             Q = expm(self._generator_matrix * dt)
@@ -211,8 +212,7 @@ class ChemicalMasterEquation(CalculationsMixin):
         self._dt = dt
 
     def run(self, start: float, stop:float , dt:float = 1,
-            overwrite: bool = False, continued: bool = False,
-            trajectory_name: str = None):
+            overwrite: bool = False, continued: bool = False):
         """runs the chemical master equation simulation
 
         Args:
@@ -226,8 +226,6 @@ class ChemicalMasterEquation(CalculationsMixin):
                 set to `True` to rerun a simulation from scratch
             continued (False):
                 set to `True` to concatenate separate trajectory segments
-            trajectory_name (None):
-                trajectory identity for writing to file
         """
 
         if self._trajectory is not None and not overwrite:
@@ -235,20 +233,22 @@ class ChemicalMasterEquation(CalculationsMixin):
                 raise ValueError("Data from previous run found in `self.trajectory`. "
                                  "To write over this data, set the `overwrite=True`")
 
-        self._run(start, stop, dt, overwrite, continued, trajectory_name)
+        self._run(start, stop, dt, overwrite, continued)
 
-    def _run(self, start, stop, dt, overwrite, continued, trajectory_name):
+    def _run(self, start, stop, dt, overwrite, continued):
 
         # using np.round to avoid floating point precision errors
         n_timesteps = int(np.round((stop - start) / dt))
         M = self.M
 
-        with timeit() as matrix_exponential:
-            if self._low_memory:
-                Q = expm(self._build_generator_matrix() * dt)
-            else:
-                Q = expm(self._generator_matrix * dt)
-        self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
+        #if self._low_memory:
+            #Q = expm(self._build_generator_matrix() * dt)
+        #else:
+        if self.Q is None:
+            Q = expm(self._generator_matrix * dt)
+            self.Q = Q
+        else:
+            Q = self.Q
 
         trajectory = np.empty(shape=(n_timesteps, M), dtype=self._array_dtype)
         if continued:
@@ -304,13 +304,14 @@ class ChemicalMasterEquation(CalculationsMixin):
     def write(self, filename, mode='r+', trajectory_name=None):
         """writes simulation data to an hdf5 file"""
 
-        if self.trajectory is None:
-            raise ValueError("no data in `self.trajectory`")
         if not Path(filename).exists():
             # if this is a fresh file
             self._write_system_info(filename, mode='x')
 
-        self._write_trajectory(filename, mode, trajectory_name)
+        if trajectory_name:
+            if self.trajectory is None:
+                raise ValueError("no data in `self.trajectory`")
+            self._write_trajectory(filename, mode, trajectory_name)
 
     def _write_system_info(self, filename, mode):
         with CMEWriter(filename, system=self, mode=mode) as W:

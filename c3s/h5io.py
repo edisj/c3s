@@ -13,6 +13,33 @@ def read(filename, mode='r', trajectory_name=None, low_memory=False):
 
         return R.system_from_file
 
+def read_h5(filename, cfg, mode='r', trajectory=False, runid=None, low_memory=False):
+
+    with h5py.File(filename, mode=mode) as root:
+
+        '''_reaction_dict = {}
+        for reaction in root['cfg/reactions']:
+            print(reaction)
+            for rate in root[f'cfg/reactions/{reaction}']:
+                value = root[f'cfg/reactions/{reaction}/{rate}'][()]
+                _reaction_dict[reaction] = [rate, value]
+        _config_dictionary = dict(reactions=_reaction_dict)'''
+        initial_populations = {key: root[f'initial_populations/{key}'][()] for key in root['initial_populations'].keys()}
+        if 'max_populations' in root:
+            max_populations = {key: root[f'max_populations/{key}'][()] for key in root['max_populations'].keys()}
+        else:
+            max_populations=None
+        G_ids = {int(key): root[f'G_ids/{key}'][()].tolist() for key in root['G_ids']}
+
+        system = c3s.ChemicalMasterEquation(config=cfg, initial_populations=initial_populations, max_populations=max_populations,
+                                            empty=True, low_memory=low_memory)
+        system._nonzero_G_elements = G_ids
+        system._constitutive_states = root['constitutive_states'][()]
+        system.M = len(system._constitutive_states)
+        if trajectory:
+            system._trajectory = root[f'runs/{runid}/trajectory'][()]
+
+    return system
 
 class CMEReader:
 
