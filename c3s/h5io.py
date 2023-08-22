@@ -65,6 +65,18 @@ class CMEReader:
     def _open_file(self):
         return h5py.File(self.filename, self.mode, track_order=True)
 
+    def _fill_system_from_file(self):
+
+        self.system_from_file._nonzero_G_elements = self.nonzero_G_elements
+
+        if not self.low_memory:
+            self.system_from_file.states = self._get_states()
+            self.system_from_file.M = len(self.system_from_file.states )
+            self.system_from_file._set_generator_matrix()
+
+        if self.trajectory_name:
+            self.system_from_file.trajectory = self._get_trajectory()
+
     def _get_config(self):
         config_dictionary = {'reactions': {}}
         for reaction_string, rate_group in self.file['original_config/reactions'].items():
@@ -103,17 +115,7 @@ class CMEReader:
 
         return trajectory_group['trajectory'][()]
 
-    def _fill_system_from_file(self):
 
-        self.system_from_file._nonzero_G_elements = self.nonzero_G_elements
-
-        if not self.low_memory:
-            self.system_from_file.states = self._get_states()
-            self.system_from_file.M = len(self.system_from_file.states )
-            self.system_from_file._set_generator_matrix()
-
-        if self.trajectory_name:
-            self.system_from_file.trajectory = self._get_trajectory()
 
     def close(self):
         self.file.close()

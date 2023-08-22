@@ -19,6 +19,7 @@ class Reactions:
             with open(config) as yaml_file:
                 self._original_config = yaml.load(yaml_file, Loader=yaml.Loader)
         self._rates, self._reaction_strings, self._reactants, self._products = self._set_rates()
+        self._constraints = self._set_constraints()
         self._species = self._set_species_vector()
         self._reaction_matrix = self._set_reaction_matrix()
         self._propensity_ids = self._set_reaction_propensities()
@@ -70,20 +71,32 @@ class Reactions:
             products.append(reaction.replace(' ', '').split('->')[1].split('+'))
         return rates, reaction_strings, reactants, products
 
+    def _set_constraints(self):
+        constraints = []
+        config_data = copy.deepcopy(self._original_config)
+        for species_involved, constraint in config_data['constraints'].items():
+            eq = sorted(species_involved.replace(' ', '').split('+')) + [constraint.replace(' ', '')]
+            constraints.append(eq)
+        return constraints
+
     def _set_species_vector(self):
-        species = []
+        species_from_constraints = []
+        species_from_reactions = []
+        for constraint in self._constraints:
+            species_from_constraints += constraint[:-1]
         # TODO: need to add check and warning for birth process without max_popoulations
-        for k, (reactants, products) in enumerate(zip(self._reactants, self._products)):
+        for reactants, products in zip(self._reactants, self._products):
             # len(reactants) is not necessarily = len(products) so we have to loop over each
             for molecule in reactants:
-                species.append(molecule)
+                species_from_reactions.append(molecule)
             for molecule in products:
-                species.append(molecule)
-        while '0' in species:
-            species.remove('0')
+                species_from_reactions.append(molecule)
+        while '0' in species_from_reactions:
+            species_from_reactions.remove('0')
         # remove duplicates and sort
-        species = sorted(list(set(species)))
-        return species
+        species_from_reactions = sorted(list(set(species_from_reactions)))
+        assert(sorted(species_from_constraints) == sorted(species_from_reactions))
+        return species_from_constraints
 
     def _set_reaction_matrix(self):
         N_reactions = len(self._reactants)
@@ -99,9 +112,9 @@ class Reactions:
         return reaction_matrix
 
     def _set_reaction_propensities(self):
-        reaction_matrix = self._reaction_matrix
-        N, K = len(self._species), len(reaction_matrix)
-        propensity_ids = [[n for n in range(N) if reaction_matrix[k, n] < 0] for k in range(K)]
+        N = len(self._species)
+        K = len(self._reaction_matrix)
+        propensity_ids = [[n for n in range(N) if self._reaction_matrix[k, n] < 0] for k in range(K)]
         return propensity_ids
 
     def print_propensities(self):

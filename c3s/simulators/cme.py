@@ -5,7 +5,7 @@ from scipy.sparse.linalg import expm
 
 from .reactions import Reactions
 from ..calculations import CalculationsMixin
-from ..utils import timeit
+from ..utils import timeit, binary_search, take_cartesian_products_recursively, convert_vectors_to_numbers
 from ..h5io import CMEWriter
 
 
@@ -29,10 +29,12 @@ class ChemicalMasterEquation(CalculationsMixin):
     def __init__(self,
                  config: Path = None,
                  initial_state: np.ndarray = None,
-                 initial_populations = None,
-                 max_populations = None,
+                 initial_populations=None,
+                 max_populations=None,
+                 constraints=None,
                  empty: bool = False,
-                 low_memory: bool = False):
+                 low_memory: bool = False,
+                 states_from='reactions'):
         """
         Args:
             config:
@@ -43,7 +45,7 @@ class ChemicalMasterEquation(CalculationsMixin):
                 dictionary of initial species populations
                 if a species population is not specified, it's initial population is taken to be 0
             max_populations:
-                maximum allowable populaation for some species
+                maximum allowable population for some species
             empty:
                 flag to leave attributes empty in the case of reading from file
             low_memory:
@@ -54,32 +56,29 @@ class ChemicalMasterEquation(CalculationsMixin):
         self.species = self.reactions.species
         self.rates = self.reactions.rates
         self._rates = self.reactions._rates
+        self._constraints = self.reactions._constraints
         if initial_state and initial_populations:
             raise ValueError("Do not specify both the `initial_state` and `initial_populations` parameters. "
                              "Use one or the other.")
         self._initial_state = initial_state
         self._initial_populations = initial_populations
         self._max_populations = max_populations
-        self._set_initial_state()
+        self._states_from = states_from
+        if states_from == 'reactions':
+            self._set_initial_state()
         self._low_memory = low_memory
         self._array_dtype = np.float32 if self._low_memory else np.float64
-
         self._constitutive_states = None
         self._generator_matrix = None
         self._nonzero_G_elements = None
         self._trajectory = None
         self.Q = None
-
         # dictionary to hold timings of various codeblocks for benchmarking
         self.timings: Dict[str, float] = {}
-
         if not empty:
-            with timeit() as set_constitutive_states:
-                self._build_constitutive_states()
+            self._set_constitutive_states()
             if not self._low_memory:
-                with timeit() as set_generator_matrix:
-                    self._set_generator_matrix()
-            self.timings['t_set_constitutive_states'] = set_constitutive_states.elapsed
+                self._set_generator_matrix()
 
     @property
     def states(self) -> np.ndarray:
@@ -126,7 +125,23 @@ class ChemicalMasterEquation(CalculationsMixin):
 
         self._initial_state = initial_state
 
-    def _build_constitutive_states(self):
+    def _set_constitutive_states(self):
+        with timeit() as set_constitutive_states:
+            if self._states_from == 'reactions':
+                self._build_constitutive_states_from_reactions()
+            elif self._states_from == 'combinatorics':
+                self._build_constitutive_states_from_combinatorics()
+        self.timings['t_build_states'] = set_constitutive_states.elapsed
+
+    def _set_generator_matrix(self):
+        with timeit() as set_G_matrix:
+            if self._states_from == 'reactions':
+                self._generator_matrix = self._build_generator_matrix_from_reactions()
+            elif self._states_from == 'combinatorics':
+                self._generator_matrix = self._build_generator_matrix_from_combinatorics()
+        self.timings['t_build_G'] = set_G_matrix.elapsed
+
+    def _build_constitutive_states_from_reactions(self):
         """iteratively generates all possible constitutive states from the intial state"""
 
         constitutive_states = [self._initial_state]
@@ -175,11 +190,30 @@ class ChemicalMasterEquation(CalculationsMixin):
         self.M = len(constitutive_states)
         self._constitutive_states = np.array(constitutive_states, dtype=np.int32)
 
-    def _set_generator_matrix(self):
-        self._generator_matrix = self._build_generator_matrix()
+    def _build_constitutive_states_from_combinatorics(self):
+        subspaces = []
+        for constraint_equation in self._constraints:
+            constraint = constraint_equation[-1]
+            N_species_involved = len(constraint_equation) - 1
+            subspaces.append(self._generate_subspace(constraint, N_species_involved))
 
-    def _build_generator_matrix(self):
+        state_space = take_cartesian_products_recursively(*subspaces)
+        self.M = len(state_space)
+        self._constitutive_states = state_space
 
+    def _generate_subspace(self, constraint, N_species_involved):
+        if '<=' in constraint:
+            max_count = int(constraint.split('<=')[-1])
+            state_space = np.arange(max_count+1)
+            return state_space.reshape(state_space.size, -1)
+        elif '=' in constraint:
+            max_count = int(constraint.split('=')[-1])
+            state_space = [[n // (max_count + 1)**i % (max_count + 1) for i in range(N_species_involved)]
+                           for n in range((max_count + 1)**N_species_involved)]
+            state_space = np.stack([np.flip(state) for state in state_space if sum(state) == max_count])
+            return state_space
+
+    def _build_generator_matrix_from_reactions(self):
         M = self.M
         K = len(self.reactions.reaction_matrix)
         G = np.zeros(shape=(M, M), dtype=self._array_dtype)
@@ -200,8 +234,23 @@ class ChemicalMasterEquation(CalculationsMixin):
         for i in range(M):
             # fix the diagonal to be the negative sum of the column
             G[i,i] = -np.sum(G[:,i])
-
         return G
+
+    def _build_generator_matrix_from_combinatorics(self):
+        reaction_numbers = convert_vectors_to_numbers(self.reactions.reaction_matrix, len(self.species))
+        state_numbers = convert_vectors_to_numbers(self.states, len(self.species))
+        state_map = []
+        for j, state_j in enumerate(state_numbers):
+            for k, reaction in enumerate(reaction_numbers):
+                state_i = state_j + reaction
+                i = binary_search(state_numbers, low=0, high=len(state_numbers)-1, x=state_i)
+                if i != -1:
+                    n_ids = self.reactions.propensity_ids[k]
+                    h = np.prod([self.states[j,n] for n in n_ids])
+                    lambda_ = self.reactions._rates[k][1]
+                    reaction_propensity = h*lambda_
+                    state_map.append((j,i, reaction_propensity))
+        return state_map
 
     def _set_propagator_matrix(self, dt):
         # dont really use this

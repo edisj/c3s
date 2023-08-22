@@ -13,7 +13,7 @@ class CalculationsMixin:
     _rates: List
     _system_name: str
     _run_name: str
-    #_constitutive_states: np.ndarray
+    _constitutive_states: np.ndarray
     species: List[str]
     _dt: float
     G: np.ndarray
