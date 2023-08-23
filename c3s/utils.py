@@ -46,8 +46,7 @@ def take_cartesian_products_recursively(*subspaces):
     return cartesian_product(subspaces[0], take_cartesian_products_recursively(*subspaces[1:]))
 
 
-def convert_vectors_to_numbers(vectors, N_species):
-    max_value = vectors.max()
+def convert_vectors_to_numbers(vectors, N_species, max_value):
     numbers = [(v*((max_value+1)**np.arange(N_species-1,-1,-1))).sum() for v in vectors]
     return np.array(numbers)
 

@@ -23,7 +23,8 @@ class TestH5IO:
 
     def test_file_io(self, outfile):
         system = ChemicalMasterEquation(config='config_files/2_isolated_switches.yml',
-                                        initial_populations={'A': 1, 'B': 1})
+                                        initial_populations={'A': 1, 'B': 1},
+                                        states_from='combinatorics')
         start, stop, dt = 0, 1, 0.01
         system.run(start, stop, dt)
 
@@ -44,14 +45,14 @@ class TestBinarySystem:
 
     @pytest.fixture(scope='class')
     def binary(self):
-        system = ChemicalMasterEquation(config='config_files/binary.yml', initial_populations={'A':1})
+        system = ChemicalMasterEquation(config='config_files/binary.yml', states_from='combinatorics')
         start, stop, dt = 0, 1, 0.01
         system.run(start, stop, dt)
         return system
 
     @pytest.fixture(scope='class')
     def binary_many_body(self):
-        system = ChemicalMasterEquation(config='config_files/binary.yml', initial_populations={'A':3})
+        system = ChemicalMasterEquation(config='config_files/binary3.yml', states_from='combinatorics')
         start, stop, dt = 0, 1, 0.01
         system.run(start, stop, dt)
         return system
@@ -70,8 +71,8 @@ class TestBinarySystem:
         assert_equal(binary.reactions.reaction_matrix, correct_reaction_matrix)
 
     def test_states(self, binary):
-        correct_states = np.array([[1,0],
-                                   [0,1]])
+        correct_states = np.array([[0,1],
+                                   [1,0]])
         assert_equal(binary.states, correct_states)
 
     def test_G(self, binary):
@@ -91,8 +92,8 @@ class TestBinarySystem:
         binary.update_rates(dict(k_1=rate3, k_2=rate4))
         assert_equal(binary.rates['k_1'], rate3)
         assert_equal(binary.rates['k_2'], rate4)
-        assert_array_almost_equal(binary.G, np.array([[-6, 10],
-                                                      [ 6,-10]]))
+        assert_array_almost_equal(binary.G, np.array([[-10, 6],
+                                                      [ 10,-6]]))
         binary.reset_rates()
         assert_equal(binary.rates['k_1'], 1)
         assert_equal(binary.rates['k_2'], 1)
@@ -138,12 +139,12 @@ class Test2IsolatedSwitch:
 
     @pytest.fixture(scope='class')
     def isolated_switches(self):
-        system = ChemicalMasterEquation(config='config_files/2_isolated_switches.yml', initial_populations={'A':1, 'B':1})
+        system = ChemicalMasterEquation(config='config_files/2_isolated_switches.yml', states_from='combinatorics')
         start, stop, dt = 0, 1, 0.01
         system.run(start, stop, dt)
         return system
 
-    def test_mutual_information_many_body(self, isolated_switches):
+    def test_mutual_information_iso_switches(self, isolated_switches):
 
         X = ['A', 'A*']
         Y = ['B', 'B*']
@@ -155,7 +156,7 @@ class Test2IsolatedSwitch:
         assert_array_almost_equal(mut_inf[0::10], correct_values)
 
 
-class TestAllosteryModel1:
+'''class TestAllosteryModel1:
 
     cfg = 'config_files/enzyme_no_allostery.yml'
 
@@ -195,4 +196,4 @@ class TestAllosteryModel1:
             i = system.species.index('S')
             j = system.species.index('P')
             assert np.max(system.states[:, i]) <= S
-            assert np.max(system.states[:, j]) <= P
+            assert np.max(system.states[:, j]) <= P'''

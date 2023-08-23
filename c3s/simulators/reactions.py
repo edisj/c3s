@@ -19,7 +19,7 @@ class Reactions:
             with open(config) as yaml_file:
                 self._original_config = yaml.load(yaml_file, Loader=yaml.Loader)
         self._rates, self._reaction_strings, self._reactants, self._products = self._set_rates()
-        self._constraints = self._set_constraints()
+        self._constraints, self._constraint_strings = self._set_constraints()
         self._species = self._set_species_vector()
         self._reaction_matrix = self._set_reaction_matrix()
         self._propensity_ids = self._set_reaction_propensities()
@@ -72,18 +72,19 @@ class Reactions:
         return rates, reaction_strings, reactants, products
 
     def _set_constraints(self):
-        constraints = []
+        constraints, constraint_strings = [], []
         config_data = copy.deepcopy(self._original_config)
         for species_involved, constraint in config_data['constraints'].items():
             eq = sorted(species_involved.replace(' ', '').split('+')) + [constraint.replace(' ', '')]
             constraints.append(eq)
-        return constraints
+            constraint_strings.append(species_involved)
+        return constraints, constraint_strings
 
     def _set_species_vector(self):
         species_from_constraints = []
         species_from_reactions = []
         for constraint in self._constraints:
-            species_from_constraints += constraint[:-1]
+            species_from_constraints += sorted(constraint[:-1])
         # TODO: need to add check and warning for birth process without max_popoulations
         for reactants, products in zip(self._reactants, self._products):
             # len(reactants) is not necessarily = len(products) so we have to loop over each

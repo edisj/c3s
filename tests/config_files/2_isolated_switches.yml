@@ -4,3 +4,6 @@ reactions:
   A* -> A:  [k_2, 1]
   B  -> B*: [k_3, 1]
   B* -> B:  [k_4, 1]
+constraints:
+  A + A*: =1
+  B + B*: =1

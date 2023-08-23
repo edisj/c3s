@@ -4,3 +4,6 @@ reactions:
   AS    -> A + S: [k_2, 1]
   B + S -> BS:    [k_3, 1]
   BS    -> B + S: [k_4, 1]
+constraints:
+  A + A*: =1
+  B + B*: =1

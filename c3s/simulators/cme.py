@@ -197,7 +197,11 @@ class ChemicalMasterEquation(CalculationsMixin):
             N_species_involved = len(constraint_equation) - 1
             subspaces.append(self._generate_subspace(constraint, N_species_involved))
 
-        state_space = take_cartesian_products_recursively(*subspaces)
+        if len(subspaces) > 1:
+            state_space = take_cartesian_products_recursively(*subspaces)
+        else:
+            state_space = np.stack(subspaces[0])
+
         self.M = len(state_space)
         self._constitutive_states = state_space
 
@@ -237,20 +241,27 @@ class ChemicalMasterEquation(CalculationsMixin):
         return G
 
     def _build_generator_matrix_from_combinatorics(self):
-        reaction_numbers = convert_vectors_to_numbers(self.reactions.reaction_matrix, len(self.species))
-        state_numbers = convert_vectors_to_numbers(self.states, len(self.species))
-        state_map = []
-        for j, state_j in enumerate(state_numbers):
-            for k, reaction in enumerate(reaction_numbers):
-                state_i = state_j + reaction
-                i = binary_search(state_numbers, low=0, high=len(state_numbers)-1, x=state_i)
+        max_value = self._constitutive_states.max() + 1
+        reactions_as_numbers = convert_vectors_to_numbers(self.reactions.reaction_matrix, len(self.species), max_value)
+        states_as_numbers = convert_vectors_to_numbers(self.states, len(self.species), max_value)
+        self._nonzero_G_elements = {k: [] for k in range(len(self.reactions.reaction_matrix))}
+        G = np.zeros(shape=(self.M, self.M), dtype=self._array_dtype)
+        for j, number_j in enumerate(states_as_numbers):
+            for k, reaction in enumerate(reactions_as_numbers):
+                number_i = number_j + reaction
+                i = binary_search(states_as_numbers, low=0, high=len(states_as_numbers)-1, x=number_i)
                 if i != -1:
                     n_ids = self.reactions.propensity_ids[k]
                     h = np.prod([self.states[j,n] for n in n_ids])
                     lambda_ = self.reactions._rates[k][1]
                     reaction_propensity = h*lambda_
-                    state_map.append((j,i, reaction_propensity))
-        return state_map
+                    self._nonzero_G_elements[k].append((i,j,reaction_propensity))
+                    G[i,j] = reaction_propensity
+
+        for i in range(self.M):
+            # fix the diagonal to be the negative sum of the column
+            G[i, i] = -np.sum(G[:, i])
+        return G
 
     def _set_propagator_matrix(self, dt):
         # dont really use this
@@ -339,8 +350,8 @@ class ChemicalMasterEquation(CalculationsMixin):
                     # the generator matrix also changes when the rates change
                     G_elements_affected = self._nonzero_G_elements[k]
                     for idx in G_elements_affected:
-                        i = tuple(idx)
-                        self._generator_matrix[i] = self._generator_matrix[i] * propensity_adjustment_factor
+                        i,j = idx[0], idx[1]
+                        self._generator_matrix[i,j] = self._generator_matrix[i,j] * propensity_adjustment_factor
                     break
             else:
                 raise KeyError(f'{new_rate_string} is not a valid rate for this system. Valid rates'

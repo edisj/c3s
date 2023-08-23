@@ -58,6 +58,7 @@ class CMEReader:
             initial_populations=initial_populations,
             max_populations=max_populations,
             low_memory=low_memory,
+            states_from='combinatorics',
             empty=True)
 
         self._fill_system_from_file()
@@ -78,11 +79,14 @@ class CMEReader:
             self.system_from_file.trajectory = self._get_trajectory()
 
     def _get_config(self):
-        config_dictionary = {'reactions': {}}
+        config_dictionary = {'reactions': {}, 'constraints': {}}
         for reaction_string, rate_group in self.file['original_config/reactions'].items():
             rate_string = list(rate_group.keys())[0]
             rate_value = self._get_attr(rate_group[rate_string], name='value')
             config_dictionary['reactions'][reaction_string] = [rate_string, rate_value]
+        for constraint_string, constraint_group in self.file['original_config/constraints'].items():
+            value = list(constraint_group.keys())[0]
+            config_dictionary['constraints'][constraint_string] = value
         return config_dictionary
 
     def _get_system_info(self):
@@ -157,9 +161,14 @@ class CMEWriter:
     def _write_original_config(self):
         reaction_strings = self.system.reactions._reaction_strings
         rates = self.system.reactions._rates
+        constraint_strings = self.system.reactions._constraint_strings
+        constraints = self.system.reactions._constraints
         for rxn, rate in zip(reaction_strings, rates):
             rate_group = self._create_group(f'original_config/reactions/{rxn}/{rate[0]}')
             self._set_attr(rate_group, name='value', value=rate[1])
+        for string, constraint in zip(constraint_strings, constraints):
+            value = constraint[-1]
+            constraint_group = self._create_group(f'original_config/constraints/{string}/{value}')
 
     def _write_species(self):
         ...

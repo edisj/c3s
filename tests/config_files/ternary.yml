@@ -6,3 +6,5 @@ reactions:
   C -> B: [k_4, 1]
   A -> C: [k_5, 1]
   C -> A: [k_6, 1]
+constraints:
+  A + B + C: =1
