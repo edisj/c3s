@@ -1,120 +1,126 @@
-import yaml
-import copy
-from typing import List, Dict, Union
+from collections import namedtuple
 from pathlib import Path
+from typing import List
+from copy import deepcopy
+import yaml
 import numpy as np
 
 
-class Reactions:
+class ReactionNetwork:
     """meant to be used as a component class via composition for the simulator classes"""
 
     def __init__(self, config):
         """reads the config file and sets various important attributes"""
 
-        # for reading configs from h5 file
         if isinstance(config, dict):
+            # for reading configs from h5 file
             self._original_config = config
         else:
             config = Path(config)
             with open(config) as yaml_file:
                 self._original_config = yaml.load(yaml_file, Loader=yaml.Loader)
-        self._rates, self._reaction_strings, self._reactants, self._products = self._set_rates()
-        self._constraints, self._constraint_strings = self._set_constraints()
+        self._reactions = self._parse_reactions()
+        self._constraints = self._parse_constraints()
+        self._rates = [reaction.rate for reaction in self._reactions]
         self._species = self._set_species_vector()
         self._reaction_matrix = self._set_reaction_matrix()
         self._species_in_reaction = self._set_species_in_reaction()
 
     @property
-    def rates(self):
-        """`self._rates` is len(K) List[List[str, float]] where k'th element gives
-        the name and value of the rate constant for the k'th reaction
-        """
-        return dict(self._rates)
-    @rates.setter
-    def rates(self, value):
-        self._rates = value
-
+    def reactions(self):
+        return self._reactions
+    @property
+    def constraints(self):
+        return self._constraints
+    @property
+    def rates(self) -> List[int]:
+        """len(K) List[int] where k'th element gives the value of the rate coefficient for the k'th reaction"""
+        return self._rates
     @property
     def species(self) -> List[str]:
-        """`self.species` is len(N) List[str] where n'th element is the name of the n'th species"""
+        """len(N) List[str] where n'th element is the name of the n'th species"""
         return self._species
-    @species.setter
-    def species(self, value):
-        self._species = value
-
     @property
     def reaction_matrix(self) -> np.ndarray:
-        """`self.reaction_matrix` is shape(K,N) array where the [k,n] element
-        gives the change in the n'th species for the k'th reaction"""
+        """(K,N) array where [k,n] element gives the change in the n'th species for the k'th reaction"""
         return self._reaction_matrix
-    @reaction_matrix.setter
-    def reaction_matrix(self, value):
-        self._reaction_matrix = value
-
     @property
     def species_in_reaction(self):
-        """`self._propensenity_ids` is len(K) List[List[int]] whose k'th element
-         gives the indices of `self.species` that are involved in the k'th reaction"""
-        return self.species_in_reaction
-    @species_in_reaction.setter
-    def species_in_reaction(self, value):
-        self._species_in_reaction = value
+        """len(K) List[List[int]] where k'th element gives the
+        indices of `self.species` that are involved in the k'th reaction"""
+        return self._species_in_reaction
 
-    def _set_rates(self):
-        rates, reaction_strings, reactants, products = [], [], [], []
+    def _parse_reactions(self):
+        reactions = []
+        Reaction = namedtuple("Reaction", ['k', 'reaction', 'reactants', 'products', 'rate_name', 'rate'])
         # deepcopy because update_rates() would otherwise change rates in self._original_config
-        config_data = copy.deepcopy(self._original_config)
-        for reaction, rate_list in config_data['reactions'].items():
-            rates.append(rate_list)
-            reaction_strings.append(reaction)
-            reactants.append(reaction.replace(' ', '').split('->')[0].split('+'))
-            products.append(reaction.replace(' ', '').split('->')[1].split('+'))
-        return rates, reaction_strings, reactants, products
+        config_data = deepcopy(self._original_config)
+        for k, (reaction, rate_list) in enumerate(config_data['reactions'].items()):
+            reaction_string = reaction
+            reactants = reaction.replace(' ', '').split('->')[0].split('+')
+            products = reaction.replace(' ', '').split('->')[1].split('+')
+            rate_name = rate_list[0]
+            rate = rate_list[1]
+            reactions.append(
+                Reaction(k=k,
+                         reaction=reaction_string,
+                         reactants=reactants,
+                         products=products,
+                         rate_name=rate_name,
+                         rate=rate))
+        return reactions
 
-    def _set_constraints(self):
-        constraints, constraint_strings = [], []
-        config_data = copy.deepcopy(self._original_config)
-        for species_involved, constraint in config_data['constraints'].items():
-            eq = sorted(species_involved.replace(' ', '').split('+')) + [constraint.replace(' ', '')]
-            constraints.append(eq)
-            constraint_strings.append(species_involved)
-        return constraints, constraint_strings
+    def _parse_constraints(self):
+        constraints = []
+        Constraint = namedtuple("Constraint", ['constraint', 'species_involved', 'separator', 'value'])
+        config_data = deepcopy(self._original_config)
+        for constraint in config_data['constraints']:
+            if '<' in constraint:
+                separator = '<='
+            elif '>' in constraint:
+                separator = '>='
+            else:
+                separator = '='
+            species_involved = sorted(constraint.split(separator)[0].replace(' ', '').split('+'))
+            value = int(constraint.split(separator)[1].replace(' ', ''))
+            constraints.append(
+                Constraint(constraint=constraint,
+                           species_involved=species_involved,
+                           separator=separator,
+                           value=value))
+        return constraints
 
     def _set_species_vector(self):
-        species_from_constraints = []
         species_from_reactions = []
-        for constraint in self._constraints:
-            species_from_constraints += sorted(constraint[:-1])
-        # TODO: need to add check and warning for birth process without max_popoulations
-        for reactants, products in zip(self._reactants, self._products):
-            # len(reactants) is not necessarily = len(products) so we have to loop over each
-            for molecule in reactants:
-                species_from_reactions.append(molecule)
-            for molecule in products:
-                species_from_reactions.append(molecule)
+        for reaction in self._reactions:
+            species_from_reactions += reaction.reactants + reaction.products
         while '0' in species_from_reactions:
             species_from_reactions.remove('0')
         # remove duplicates and sort
         species_from_reactions = sorted(list(set(species_from_reactions)))
-        assert(sorted(species_from_constraints) == sorted(species_from_reactions))
+        species_from_constraints = []
+        for constraint in self._constraints:
+            species_from_constraints += constraint.species_involved
+        # this should be true or I can't build state space later
+        assert(sorted(species_from_constraints) == species_from_reactions)
         return species_from_constraints
 
     def _set_reaction_matrix(self):
-        N_reactions = len(self._reactants)
-        N_species = len(self._species)
-        reaction_matrix = np.zeros(shape=(N_reactions, N_species), dtype=np.int32)
-        for reaction, reactants, products in zip(reaction_matrix, self._reactants, self._products):
+        K = len(self._reactions)
+        N = len(self._species)
+        reaction_matrix = np.zeros(shape=(K, N), dtype=int)
+        for reaction in self._reactions:
             for n, species in enumerate(self._species):
                 # if this species in both a product and reactant, net effect is 0
-                if species in reactants:
-                    reaction[n] += -1
-                if species in products:
-                    reaction[n] += 1
+                if species in reaction.reactants:
+                    reaction_matrix[reaction.k, n] += -1
+                if species in reaction.products:
+                    reaction_matrix[reaction.k, n] += 1
         return reaction_matrix
 
     def _set_species_in_reaction(self):
+        K = len(self._reactions)
         N = len(self._species)
-        K = len(self._reaction_matrix)
         indices = [[n for n in range(N) if self._reaction_matrix[k, n] < 0] for k in range(K)]
         return indices
 
@@ -122,7 +128,7 @@ class Reactions:
         """generates a readable list of the propensity of each reaction"""
 
         propensity_strings: List[str] = []
-        for n_ids, rate in zip(self._species_in_reaction, self._rates):
+        for n_ids, rate in zip(self._species_in_reaction, self.rates):
             transition_rate = rate[0]
             for n in n_ids:
                 transition_rate += f'c^{self._species[n]}'

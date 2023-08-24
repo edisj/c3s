@@ -3,11 +3,10 @@ from typing import List, Dict
 import numpy as np
 from scipy.sparse.linalg import expm
 
-from .reactions import Reactions
+from .reactions import ReactionNetwork
 from ..calculations import CalculationsMixin
 from ..math_utils import combine_state_spaces, vector_to_number, binary_search
 from ..utils import timeit
-from ..sparsematrix import SparseMatrix
 
 
 class ChemicalMasterEquation(CalculationsMixin):
@@ -32,7 +31,6 @@ class ChemicalMasterEquation(CalculationsMixin):
                  initial_state=None,
                  initial_populations=None,
                  max_populations=None,
-                 constraints=None,
                  empty=False):
         """
         Args:
@@ -49,11 +47,9 @@ class ChemicalMasterEquation(CalculationsMixin):
                 flag to leave attributes empty in the case of reading from file
         """
 
-        self.reactions = Reactions(config)
-        self.species = self.reactions.species
-        self.rates = self.reactions.rates
-        self._rates = self.reactions._rates
-        self._constraints = self.reactions._constraints
+        self.reaction_network = ReactionNetwork(config)
+        self.species = self.reaction_network.species
+        self._rates = self.reaction_network.rates
         if initial_state and initial_populations:
             raise ValueError("Do not specify both the `initial_state` and `initial_populations` parameters. "
                              "Use one or the other.")
@@ -65,7 +61,7 @@ class ChemicalMasterEquation(CalculationsMixin):
         self._generator_matrix = None
         self._nonzero_G_elements = None
         self._trajectory = None
-        self.Q = None
+
         # dictionary to hold timings of various codeblocks for benchmarking
         self.timings: Dict[str, float] = {}
         if not empty:
@@ -79,108 +75,119 @@ class ChemicalMasterEquation(CalculationsMixin):
     def states(self, value):
         self._constitutive_states = value
     @property
-    def G(self) -> np.ndarray:
-        """the generator matrix is an MxM matrix where M is the
-        total number of states given by `len(self.constitutive_states)`"""
-        return self._generator_matrix
-    @property
     def trajectory(self) -> np.ndarray:
         return self._trajectory
     @trajectory.setter
     def trajectory(self, value):
         self._trajectory = value
 
+    @property
+    def N(self) -> int:
+        """N is the total number of unique chemical species in the reaction network"""
+        return len(self.reaction_network.species)
+    @property
+    def K(self) -> int:
+        """K is the total number of reactions in the reaction network"""
+        return len(self.reaction_network.reaction_matrix)
+    @property
+    def M(self) -> int:
+        """M is the total number of states in the state space"""
+        return len(self._constitutive_states)
+    @property
+    def G(self) -> np.ndarray:
+        """G is the MxM transition rate matrix in column format"""
+        return self._generator_matrix
+
     def _set_initial_state(self):
         """sets the `self.initial_state` attribute that specifies the vector of species counts at t=0"""
 
         if self._initial_state:
-            assert len(self._initial_state) == len(self.species)
+            assert len(self._initial_state) == self.N
             # initial state was specified by the user
             return
 
-        for species in self._initial_populations.keys():
-            if species not in self.species:
-                raise KeyError(f'{species} is not a valid species. It must be in one of the '
-                               f'chemical reactions specified in the config file.')
-        # dont remember why I put this in this method
         if self._max_populations:
             for species in self._max_populations.keys():
                 if species not in self.species:
                     raise KeyError(f'{species} is not a valid species. It must be in one of the '
                                    f'chemical reactions specified in the config file.')
-
-        initial_state = [self._initial_populations[species]
-                         if species in self._initial_populations else 0
-                         for species in self.species]
-
-        self._initial_state = initial_state
+        if self._initial_populations:
+            for species in self._initial_populations.keys():
+                if species not in self.species:
+                    raise KeyError(f'{species} is not a valid species. It must be in one of the '
+                                   f'chemical reactions specified in the config file.')
+            initial_state = [self._initial_populations[species]
+                             if species in self._initial_populations else 0
+                             for species in self.species]
+            self._initial_state = initial_state
 
     def _set_constitutive_states(self):
         with timeit() as set_constitutive_states:
-            self._constitutive_states = self._build_constitutive_states()
+            self._constitutive_states = self._build_state_space()
         self.timings['t_build_states'] = set_constitutive_states.elapsed
 
     def _set_generator_matrix(self):
         with timeit() as set_G_matrix:
-            self._generator_matrix = self.__build_generator_matrix_OLD()
+            self._rows, self._cols, self.values = self._build_generator_matrix()
         self.timings['t_build_G'] = set_G_matrix.elapsed
 
-    def _build_constitutive_states(self):
-        subspaces = [self._generate_subspace(constraint[-1], len(constraint)-1) for constraint in self._constraints]
+    def _build_state_space(self):
+        subspaces = [self._generate_subspace(constraint) for constraint in self.reaction_network.constraints]
         if len(subspaces) > 1:
-            state_space = combine_state_spaces(*subspaces)
+            return combine_state_spaces(*subspaces)
         else:
-            state_space = np.stack(subspaces[0])
-        self.M = len(state_space)
-        return state_space
+            return np.stack(subspaces[0])
 
-    def _generate_subspace(self, constraint, N):
-        if '<=' in constraint:
-            cutoff = int(constraint.split('<=')[-1]) + 1
-            subspace = np.arange(cutoff)
+    def _generate_subspace(self, constraint):
+        lim = constraint.value
+        N = len(constraint.species_involved)
+        if constraint.separator == '<=':
+            subspace = np.arange(lim+1)
             return subspace.reshape(subspace.size, -1)
-        elif '=' in constraint:
-            cutoff = int(constraint.split('=')[-1]) + 1
-            subspace = [[n // cutoff**i % cutoff for i in range(N)] for n in range(cutoff**N)]
-            subspace = np.stack([np.flip(state) for state in subspace if sum(state) == cutoff-1])
+        elif constraint.separator == '=':
+            subspace = [[n // (lim+1)**i % (lim+1) for i in range(N)] for n in range((lim+1)**N)]
+            subspace = np.stack([np.flip(state) for state in subspace if sum(state) == lim])
             return subspace
 
     def _build_generator_matrix(self):
 
-        states = vector_to_number(self.states, base=self._constitutive_states.max()+1)
-        reactions = vector_to_number(self.reactions.reaction_matrix, base=self._constitutive_states.max()+1)
+        M, K, N = self.M, self.K, self.N
 
-        G_rows = [i for i in range(self.M)]
-        G_cols = [j for j in range(self.M)]
-        G_values = [0 for _ in range(self.M)]
-        self._nonzero_G_elements = {k: [] for k in range(len(self.reactions.reaction_matrix))}
+        G_rows = [i for i in range(M)]
+        G_cols = [j for j in range(M)]
+        G_values = [0 for _ in range(M)]
+        # gives which elements of G the k'th reaction is responsible for
+        k_to_G_map = {k: [] for k in range(K)}
+
+        base = self._constitutive_states.max() + 1
+        states = vector_to_number(self._constitutive_states, N, base)
+        reactions = vector_to_number(self.reaction_network.reaction_matrix, N, base)
         for j, state_j in enumerate(states):
             for k, reaction in enumerate(reactions):
                 state_i = state_j + reaction
+                # find index of state_i in state space
                 i = binary_search(states, state_i)
                 if not i:
                     # state_j + reaction_k was not in state space
                     continue
-                n_ids = self.reactions.species_in_reaction[k]
-                lambda_ = self.reactions._rates[k][1]
-                h = np.prod([self.states[j,n] for n in n_ids])
-                propensity = h*lambda_
+                # indices of which species are involved in k'th reaction
+                ids = self.reaction_network.species_in_reaction[k]
+                # the elementary transition rate of the k'th reaction
+                rate = self._rates[k]
+                # the combinatorial factor associated for the k'th reaction for the j'th state
+                h = np.prod([self.states[j,n] for n in ids])
+                # overall reaction propensity from the j'th state
+                propensity = h * rate
                 G_rows.append(i)
                 G_cols.append(j)
                 G_values.append(propensity)
                 G_values[j] -= propensity
-                self._nonzero_G_elements[k].append((i,j))
+                k_to_G_map[k].append((i,j))
 
+        self._k_to_G_map = k_to_G_map
+        return G_rows, G_cols, G_values
         #G = SparseMatrix(np.array(G_rows), np.array(G_cols), np.array(G_values))
         #return G
-
-    def _set_propagator_matrix(self, dt):
-        # dont really use this
-        with timeit() as t_exmp:
-            Q = expm(self._generator_matrix * dt)
-        self.timings['t_matrix_exponential'] = t_exmp.elapsed
-        self.Q = Q
-        self._dt = dt
 
     def run(self, N_timesteps, dt=1, overwrite=False, continued=False):
         """runs the chemical master equation simulation
@@ -216,7 +223,7 @@ class ChemicalMasterEquation(CalculationsMixin):
         if continued:
             trajectory[0] = Q.dot(self._trajectory[-1])
         else:
-            # fixing initial probability to be 1 in the intitial state
+            # fixing initial probability to be 1 in the initial state
             trajectory[0] = np.zeros(shape=M, dtype=np.float64)
             trajectory[0, 0] = 1.0
 
@@ -230,40 +237,24 @@ class ChemicalMasterEquation(CalculationsMixin):
 
     def update_rates(self, new_rates):
         """updates `self.rates` and `self.G` with new transition rates"""
-
-        for new_rate_string, new_rate_value in new_rates.items():
-            for k, old_rate in enumerate(self._rates):
-                if old_rate[0] == new_rate_string:
-                    if old_rate[1] == new_rate_value:
-                        propensity_adjustment_factor = 1
-                    else:
-                        #TODO: handle the old_rate=0 case
-                        propensity_adjustment_factor = new_rate_value / old_rate[1]
-                    # make sure to do this after saving the propensity factor
-                    self._rates[k][1] = new_rate_value
-                    self.rates[new_rate_string] = new_rate_value
-                    # the generator matrix also changes when the rates change
-                    G_elements_affected = self._nonzero_G_elements[k]
-                    for idx in G_elements_affected:
-                        i,j = idx[0], idx[1]
-                        self._generator_matrix[i,j] = self._generator_matrix[i,j] * propensity_adjustment_factor
+        for rate_name, new_rate in new_rates.items():
+            for reaction in self.reaction_network.reactions:
+                if reaction.rate_name == rate_name:
+                    reaction.rate = new_rate
                     break
             else:
-                raise KeyError(f'{new_rate_string} is not a valid rate for this system. Valid rates'
+                raise KeyError(f'{rate_name} is not a valid rate for this system. Valid rates'
                                f'are listed in `self.rates`.')
-        # need to redo the diagonal elements as well
-        for m in range(len(self._generator_matrix)):
-            self._generator_matrix[m,m] = 0
-            self._generator_matrix[m,m] = -np.sum(self._generator_matrix[:, m])
+        # recreate G with new rates
+        self._generator_matrix = self._build_generator_matrix()
 
     def reset_rates(self):
         """resets `self.rates` to the values of the original config file"""
-
-        rates_from_config = [rate for rate in self.reactions._original_config['reactions'].values()]
+        rates_from_config = [rate for rate in self.reaction_network._original_config['reactions'].values()]
         original_rates = {rate[0]: rate[1] for rate in rates_from_config}
         self.update_rates(original_rates)
 
-    def print_constitutive_states(self):
+    '''def print_constitutive_states(self):
         """generates a convenient readable list of the constitutive states"""
 
         constitutive_states_strings: List[List[str]] = []
@@ -278,10 +269,10 @@ class ChemicalMasterEquation(CalculationsMixin):
     def print_generator_matrix(self):
         """generates a convenient readable generator matrix with string names"""
 
-        M = len(self.G)
+        M, K = self.M, self.K
         readable_G = [['0' for _ in range(M)] for _ in range(M)]
-        propensity_strings = self.reactions.print_propensities()
-        for k in range(len(self.reactions.reaction_matrix)):
+        propensity_strings = self.reaction_network.print_propensities()
+        for k in range(K):
             for idx in self._nonzero_G_elements[k]:
                 i,j = idx
                 readable_G[i][j] = propensity_strings[k]
@@ -292,7 +283,7 @@ class ChemicalMasterEquation(CalculationsMixin):
                     diagonal += f'{readable_G[i][j]} + '
             readable_G[j][j] = diagonal[:-3] + ')'
 
-        return readable_G
+        return readable_G'''
 
     def __build_constitutive_states_OLD(self):
         """iteratively generates all possible constitutive states from the intial state"""
@@ -303,7 +294,7 @@ class ChemicalMasterEquation(CalculationsMixin):
             for species, max_count in self._max_populations.items()
         ] if self._max_populations else False
 
-        self._nonzero_G_elements = {k: [] for k in range(len(self.reactions.reaction_matrix))}
+        self._nonzero_G_elements = {k: [] for k in range(len(self.reaction_network.reaction_matrix))}
 
         # newly_added keeps track of the most recently accepted states
         newly_added_states = [np.array(self._initial_state)]
@@ -313,7 +304,7 @@ class ChemicalMasterEquation(CalculationsMixin):
                 i = int(np.argwhere(np.all(constitutive_states == state, axis=1)))
                 # the idea here is that for each of the recently added states,
                 # we iterate through each reaction to see if a transition is possible
-                for k, reaction in enumerate(self.reactions.reaction_matrix):
+                for k, reaction in enumerate(self.reaction_network.reaction_matrix):
                     # gives a boolean array for which reactants are required
                     reactants_required = np.argwhere(reaction < 0).T
                     reactants_available = state > 0
@@ -340,26 +331,23 @@ class ChemicalMasterEquation(CalculationsMixin):
             if not newly_added_states:
                 break
 
-        self.M = len(constitutive_states)
         self._constitutive_states = np.array(constitutive_states, dtype=np.int32)
 
     def __build_generator_matrix_OLD(self):
         M = self.M
-        K = len(self.reactions.reaction_matrix)
-        G = np.zeros(shape=(M, M), dtype=self._array_dtype)
+        G = np.zeros(shape=(M,M), dtype=float)
         for k, value in self._nonzero_G_elements.items():
             for idx in value:
                 i,j = idx
                 # the indices of the species involved in the reaction
-                n_ids = self.reactions.propensity_ids[k]
+                n_ids = self.reaction_network.species_in_reaction[k]
                 # h is the combinatorial factor for number of reactions attempting to fire
                 # At the moment this assumes maximum stoichiometric coefficient of 1
                 # TODO: generalize h for any coefficient
                 state_j = self._constitutive_states[j]
                 h = np.prod([state_j[n] for n in n_ids])
-                # lambda_ is the elementary reaction rate for the k'th reaction
-                lambda_ = self.reactions._rates[k][1]
-                reaction_propensity = h * lambda_
+                rate = self.reaction_network.reactions[k].rate
+                reaction_propensity = h * rate
                 G[i,j] = reaction_propensity
         for i in range(M):
             # fix the diagonal to be the negative sum of the column

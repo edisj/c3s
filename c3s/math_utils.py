@@ -28,6 +28,6 @@ def combine_state_spaces(*subspaces):
     return cartesian_product(subspaces[0], combine_state_spaces(*subspaces[1:]))
 
 
-def vector_to_number(vectors, base):
-    numbers = [(v*(base**np.arange(len(v)-1,-1,-1))).sum() for v in vectors]
-    return np.array(numbers)
+def vector_to_number(vector, N, base):
+    number = (vector * (base**np.arange(N-1, -1, -1))).sum(axis=1)
+    return number

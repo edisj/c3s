@@ -5,14 +5,48 @@ import pytest
 import sys
 import numpy as np
 import math
-from c3s import ChemicalMasterEquation
-from c3s.h5io import read
+from c3s import ChemicalMasterEquation as CME
+from c3s.h5io import read, write
 from numpy.testing import assert_almost_equal, assert_equal, assert_array_almost_equal,assert_array_equal
 
 
 def test_c3s_imported():
     """Sample test, will always pass so long as import statement worked."""
     assert "c3s" in sys.modules
+
+
+class TestBase:
+
+    def __init__(self, correct_data, reactions_file):
+        self.correct_data = correct_data
+        self.reactions_file = reactions_file
+
+    @pytest.fixture(scope='class')
+    def system(self):
+        return CME(config=self.reactions_file)
+
+    def test_species(self, system):
+        ...
+
+    def test_reactions(self, system):
+        ...
+
+    def test_constraints(self, system):
+        ...
+
+    def test_state_space(self, system):
+        ...
+
+    def test_generator_matrix(self, system):
+        ...
+
+    def test_changing_rates(self, system):
+        ...
+
+    def test_reset_rates(self, system):
+        ...
+
+
 
 
 class TestH5IO:
@@ -23,10 +57,8 @@ class TestH5IO:
 
     def test_file_io(self, outfile):
         system = ChemicalMasterEquation(config='config_files/2_isolated_switches.yml',
-                                        initial_populations={'A': 1, 'B': 1},
-                                        states_from='combinatorics')
-        start, stop, dt = 0, 1, 0.01
-        system.run(start, stop, dt)
+                                        initial_populations={'A': 1, 'B': 1})
+        system.run()
 
         system.write(outfile)
         system2 = read(outfile)
@@ -45,14 +77,14 @@ class TestBinarySystem:
 
     @pytest.fixture(scope='class')
     def binary(self):
-        system = ChemicalMasterEquation(config='config_files/binary.yml', states_from='combinatorics')
+        system = ChemicalMasterEquation(config='config_files/binary.yml')
         start, stop, dt = 0, 1, 0.01
         system.run(start, stop, dt)
         return system
 
     @pytest.fixture(scope='class')
     def binary_many_body(self):
-        system = ChemicalMasterEquation(config='config_files/binary3.yml', states_from='combinatorics')
+        system = ChemicalMasterEquation(config='config_files/binary3.yml')
         start, stop, dt = 0, 1, 0.01
         system.run(start, stop, dt)
         return system
@@ -139,7 +171,7 @@ class Test2IsolatedSwitch:
 
     @pytest.fixture(scope='class')
     def isolated_switches(self):
-        system = ChemicalMasterEquation(config='config_files/2_isolated_switches.yml', states_from='combinatorics')
+        system = ChemicalMasterEquation(config='config_files/2_isolated_switches.yml')
         start, stop, dt = 0, 1, 0.01
         system.run(start, stop, dt)
         return system

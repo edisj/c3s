@@ -2,7 +2,7 @@ from collections import namedtuple
 import math
 import random
 import numpy as np
-from .reactions import Reactions
+from .reactions import ReactionNetwork
 
 
 
@@ -25,7 +25,7 @@ class Gillespie:
 
         """
 
-        self.reactions = Reactions(config)
+        self.reactions = ReactionNetwork(config)
         self.species = self.reactions.species
         self.rates = self.reactions.rates
         self._rates = self.reactions._rates

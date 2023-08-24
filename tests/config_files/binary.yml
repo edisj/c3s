@@ -3,4 +3,4 @@ reactions:
   A -> B: [k_1, 1]
   B -> A: [k_2, 1]
 constraints:
-  A + B: =1
+  - A + B = 1
