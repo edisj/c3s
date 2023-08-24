@@ -1,6 +1,5 @@
 import numpy as np
 import time
-from tqdm.auto import tqdm
 
 
 class timeit:
@@ -19,36 +18,6 @@ class timeit:
         end_time = time.time()
         self.elapsed = end_time - self._start_time
         return False
-
-
-def binary_search(array, low, high, x):
-    if high >= low:
-        mid = (high + low) // 2
-        if array[mid] == x:
-            return mid
-        elif array[mid] > x:
-            return binary_search(array, low, mid-1, x)
-        else:
-            return binary_search(array, mid+1, high, x)
-    else:
-        return -1
-
-
-def cartesian_product(space_1, space_2):
-    product_space = [np.concatenate((state_i, state_j)) for state_i in space_1 for state_j in space_2]
-    return np.stack(product_space)
-
-
-def take_cartesian_products_recursively(*subspaces):
-
-    if len(subspaces) == 2:
-        return cartesian_product(subspaces[0], subspaces[1])
-    return cartesian_product(subspaces[0], take_cartesian_products_recursively(*subspaces[1:]))
-
-
-def convert_vectors_to_numbers(vectors, N_species, max_value):
-    numbers = [(v*((max_value+1)**np.arange(N_species-1,-1,-1))).sum() for v in vectors]
-    return np.array(numbers)
 
 
 def split_tasks_for_workers(N_tasks, N_workers, rank):
@@ -74,11 +43,3 @@ def split_tasks_for_workers(N_tasks, N_workers, rank):
     print(start, stop, blocksize)
 
     return start, stop, blocksize
-
-
-class ProgressBar(tqdm):
-    """tqdm progress bar with the default settings I want."""
-
-    def __init__(self, *args, **kwargs):
-        """"""
-        super(ProgressBar, self).__init__(leave=False, dynamic_ncols=False, *args, **kwargs)

@@ -1,64 +1,34 @@
 import c3s
 import h5py
 import numpy as np
+from pathlib import Path
 
 
-def read(filename, mode='r', trajectory_name=None, low_memory=False):
-
-    with CMEReader(
-        filename=filename,
-        mode=mode,
-        trajectory_name=trajectory_name,
-        low_memory=low_memory) as R:
-
+def read(filename, mode='r', trajectory_name=None):
+    with CMEReader(filename=filename, mode=mode, trajectory_name=trajectory_name) as R:
         return R.system_from_file
 
-def read_h5(filename, cfg, mode='r', trajectory=False, runid=None, low_memory=False):
 
-    with h5py.File(filename, mode=mode) as root:
+def write(filename, system, mode='x', trajectory_name=None):
+    """writes simulation data to an hdf5 file"""
 
-        '''_reaction_dict = {}
-        for reaction in root['cfg/reactions']:
-            print(reaction)
-            for rate in root[f'cfg/reactions/{reaction}']:
-                value = root[f'cfg/reactions/{reaction}/{rate}'][()]
-                _reaction_dict[reaction] = [rate, value]
-        _config_dictionary = dict(reactions=_reaction_dict)'''
-        initial_populations = {key: root[f'initial_populations/{key}'][()] for key in root['initial_populations'].keys()}
-        if 'max_populations' in root:
-            max_populations = {key: root[f'max_populations/{key}'][()] for key in root['max_populations'].keys()}
-        else:
-            max_populations=None
-        G_ids = {int(key): root[f'G_ids/{key}'][()].tolist() for key in root['G_ids']}
+    fresh_file = not Path(filename).exists()
+    with CMEWriter(filename, system, mode, fresh=fresh_file) as W:
+        W.write(filename)
 
-        system = c3s.ChemicalMasterEquation(config=cfg, initial_populations=initial_populations, max_populations=max_populations,
-                                            empty=True, low_memory=low_memory)
-        system._nonzero_G_elements = G_ids
-        system._constitutive_states = root['constitutive_states'][()]
-        system.M = len(system._constitutive_states)
-        if trajectory:
-            system._trajectory = root[f'runs/{runid}/trajectory'][()]
-
-    return system
 
 class CMEReader:
-
-    def __init__(self, filename, mode, trajectory_name=None, low_memory=False):
+    def __init__(self, filename, mode, trajectory_name=None):
         self.filename = filename
         self.mode = mode
         self.trajectory_name = trajectory_name
-        self.low_memory = low_memory
         self.file = self._open_file()
-
         config = self._get_config()
         initial_populations, max_populations, self.nonzero_G_elements = self._get_system_info()
-
         self.system_from_file = c3s.ChemicalMasterEquation(
             config=config,
             initial_populations=initial_populations,
             max_populations=max_populations,
-            low_memory=low_memory,
-            states_from='combinatorics',
             empty=True)
 
         self._fill_system_from_file()
@@ -70,10 +40,9 @@ class CMEReader:
 
         self.system_from_file._nonzero_G_elements = self.nonzero_G_elements
 
-        if not self.low_memory:
-            self.system_from_file.states = self._get_states()
-            self.system_from_file.M = len(self.system_from_file.states )
-            self.system_from_file._set_generator_matrix()
+        self.system_from_file.states = self._get_states()
+        self.system_from_file.M = len(self.system_from_file.states )
+        self.system_from_file._set_generator_matrix()
 
         if self.trajectory_name:
             self.system_from_file.trajectory = self._get_trajectory()
@@ -118,8 +87,6 @@ class CMEReader:
         self.system_from_file.update_rates(rates_from_trajectory)
 
         return trajectory_group['trajectory'][()]
-
-
 
     def close(self):
         self.file.close()
@@ -170,6 +137,30 @@ class CMEWriter:
             value = constraint[-1]
             constraint_group = self._create_group(f'original_config/constraints/{string}/{value}')
 
+    def _write_system_info(self, filename, mode):
+        with CMEWriter(filename, system=self, mode=mode) as W:
+            # basic reaction info
+            W._dump_config()
+            W._create_dataset('constitutive_states', data=self.states)
+            for k, indices in self.system._nonzero_G_elements.items():
+                W._create_dataset(f'nonzero_G_elements/{k}', data=np.array(indices))
+            for species, count in self.system._initial_populations.items():
+                W._create_dataset(f'initial_populations/{species}', data=np.array(count))
+            if self.system._max_populations:
+                for species, count in self.system._max_populations.items():
+                    W._create_dataset(f'max_populations/{species}', data=np.array(count))
+
+    def _write_trajectory(self, filename, mode, trajectory_name):
+        with CMEWriter(filename, system=self, mode=mode) as W:
+            traj_group = W._require_group('trajectories')
+            if trajectory_name is None:
+                trajectory_name = f'trajectory00{len(traj_group) + 1}'
+            W._create_dataset(f'trajectories/{trajectory_name}/trajectory', data=self.trajectory)
+            for rate, value in self.rates.items():
+                rate_group = W._create_group(f'trajectories/{trajectory_name}/rates/{rate}')
+                W._set_attr(rate_group, name='value', value=value)
+
+
     def _write_species(self):
         ...
     def _write_reaction_matrix(self):
@@ -184,75 +175,3 @@ class CMEWriter:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
         return False
-
-
-def group_to_dict(group):
-    """stores nested hdf5 groups into python dictionary
-
-    needs work..
-    """
-    dictionary = {}
-    def recurse_though_group(group):
-        for key in group:
-            if isinstance(group, h5py.Group):
-                dictionary[key] = list(group[key].keys())
-                # recurseGroup(g[key])
-
-    # need to use 1 of these
-    '''def nested_set(dic, keys, value):
-        for key in keys[:-1]:
-            dic = dic.setdefault(key, {})
-        dic[keys[-1]] = value'''
-
-    """def nested_set(dic, keys, value, create_missing=True):
-    d = dic
-    for key in keys[:-1]:
-        if key in d:
-            d = d[key]
-        elif create_missing:
-            d = d.setdefault(key, {})
-        else:
-            return dic
-    if keys[-1] in d or create_missing:
-        d[keys[-1]] = value
-    return dic"""
-    return dictionary
-
-
-def dict_to_group(dictionary, group):
-    """recursively iterate through a dictionary and store data into `h5py.Group`s"""
-
-    # use tempfile instead to return a group object ??
-    def recurse_though_dictionary(d, previous_keys=None):
-        for key, value in d.items():
-            fullpath = f'{previous_keys}/{key}' if previous_keys else f'{key}'
-            if isinstance(value, dict):
-                recurse_though_dictionary(value, previous_keys=fullpath)
-            else:
-                _store_data_based_on_type(key, group, value)
-
-    recurse_though_dictionary(dictionary)
-
-
-def _store_data_based_on_type(key, group, data):
-    """probably a cleaner way to do this w decorator"""
-
-    possibilities = dict(
-        is_scalar = isinstance(data, int) or isinstance(data, float),
-        is_array = isinstance(data, np.ndarray))
-        #is_list = isinstance(data, list),
-        #is_tuple = isinstance(data, tuple))
-        # string ??
-
-    dispatch_function = dict(
-        is_scalar = group.attrs.create,
-        is_array = group.create_dataset)
-        #is_list
-        #is_tuple
-        #is_string
-
-    for type_, is_type in possibilities.items():
-        if is_type:
-            return dispatch_function[type_]
-
-

@@ -4,7 +4,7 @@ import h5py
 from collections import namedtuple
 from typing import List, Dict
 from scipy.sparse.linalg import expm
-from .utils import ProgressBar, timeit
+from .utils import timeit
 
 
 class CalculationsMixin:
@@ -19,10 +19,8 @@ class CalculationsMixin:
     G: np.ndarray
     trajectory: np.ndarray
 
-    def calculate_instantaneous_mutual_information(self, X, Y, timestep='all', base=2):
+    def calculate_instantaneous_mutual_information(self, X, Y, base=2):
 
-        if timestep != 'all':
-            raise ValueError("other timestep values not implemented yet..")
         try:
             N_timesteps = len(self.trajectory)
         except TypeError:

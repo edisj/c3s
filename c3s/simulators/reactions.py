@@ -22,7 +22,7 @@ class Reactions:
         self._constraints, self._constraint_strings = self._set_constraints()
         self._species = self._set_species_vector()
         self._reaction_matrix = self._set_reaction_matrix()
-        self._propensity_ids = self._set_reaction_propensities()
+        self._species_in_reaction = self._set_species_in_reaction()
 
     @property
     def rates(self):
@@ -52,13 +52,13 @@ class Reactions:
         self._reaction_matrix = value
 
     @property
-    def propensity_ids(self):
+    def species_in_reaction(self):
         """`self._propensenity_ids` is len(K) List[List[int]] whose k'th element
          gives the indices of `self.species` that are involved in the k'th reaction"""
-        return self._propensity_ids
-    @propensity_ids.setter
-    def propensity_ids(self, value):
-        self._propensity_ids = value
+        return self.species_in_reaction
+    @species_in_reaction.setter
+    def species_in_reaction(self, value):
+        self._species_in_reaction = value
 
     def _set_rates(self):
         rates, reaction_strings, reactants, products = [], [], [], []
@@ -112,19 +112,19 @@ class Reactions:
                     reaction[n] += 1
         return reaction_matrix
 
-    def _set_reaction_propensities(self):
+    def _set_species_in_reaction(self):
         N = len(self._species)
         K = len(self._reaction_matrix)
-        propensity_ids = [[n for n in range(N) if self._reaction_matrix[k, n] < 0] for k in range(K)]
-        return propensity_ids
+        indices = [[n for n in range(N) if self._reaction_matrix[k, n] < 0] for k in range(K)]
+        return indices
 
     def print_propensities(self):
         """generates a readable list of the propensity of each reaction"""
 
         propensity_strings: List[str] = []
-        for propensity_ids, rate in zip(self._propensity_ids, self._rates):
+        for n_ids, rate in zip(self._species_in_reaction, self._rates):
             transition_rate = rate[0]
-            for n in propensity_ids:
+            for n in n_ids:
                 transition_rate += f'c^{self._species[n]}'
             propensity_strings.append(transition_rate)
 

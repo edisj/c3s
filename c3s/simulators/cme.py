@@ -1,17 +1,18 @@
 from typing import List, Dict
-from pathlib import Path
+
 import numpy as np
 from scipy.sparse.linalg import expm
 
 from .reactions import Reactions
 from ..calculations import CalculationsMixin
-from ..utils import timeit, binary_search, take_cartesian_products_recursively, convert_vectors_to_numbers
-from ..h5io import CMEWriter
+from ..math_utils import combine_state_spaces, vector_to_number, binary_search
+from ..utils import timeit
+from ..sparsematrix import SparseMatrix
 
 
 class ChemicalMasterEquation(CalculationsMixin):
     """
-    Simulator class of the Chemical Master Equationn (CME).
+    Simulator class of the Chemical Master Equation (CME).
 
     Uses the Chemical Master Equation to numerically integrate the time
     evolution of the probability trajectory of a chemical system.
@@ -27,14 +28,12 @@ class ChemicalMasterEquation(CalculationsMixin):
     np.seterr(under='raise', over='raise')
 
     def __init__(self,
-                 config: Path = None,
-                 initial_state: np.ndarray = None,
+                 config=None,
+                 initial_state=None,
                  initial_populations=None,
                  max_populations=None,
                  constraints=None,
-                 empty: bool = False,
-                 low_memory: bool = False,
-                 states_from='reactions'):
+                 empty=False):
         """
         Args:
             config:
@@ -48,8 +47,6 @@ class ChemicalMasterEquation(CalculationsMixin):
                 maximum allowable population for some species
             empty:
                 flag to leave attributes empty in the case of reading from file
-            low_memory:
-                flag to use 32 bit precision and to not save constitutive states in memeory
         """
 
         self.reactions = Reactions(config)
@@ -63,11 +60,7 @@ class ChemicalMasterEquation(CalculationsMixin):
         self._initial_state = initial_state
         self._initial_populations = initial_populations
         self._max_populations = max_populations
-        self._states_from = states_from
-        if states_from == 'reactions':
-            self._set_initial_state()
-        self._low_memory = low_memory
-        self._array_dtype = np.float32 if self._low_memory else np.float64
+        self._set_initial_state()
         self._constitutive_states = None
         self._generator_matrix = None
         self._nonzero_G_elements = None
@@ -77,8 +70,7 @@ class ChemicalMasterEquation(CalculationsMixin):
         self.timings: Dict[str, float] = {}
         if not empty:
             self._set_constitutive_states()
-            if not self._low_memory:
-                self._set_generator_matrix()
+            self._set_generator_matrix()
 
     @property
     def states(self) -> np.ndarray:
@@ -86,13 +78,11 @@ class ChemicalMasterEquation(CalculationsMixin):
     @states.setter
     def states(self, value):
         self._constitutive_states = value
-
     @property
     def G(self) -> np.ndarray:
         """the generator matrix is an MxM matrix where M is the
         total number of states given by `len(self.constitutive_states)`"""
         return self._generator_matrix
-
     @property
     def trajectory(self) -> np.ndarray:
         return self._trajectory
@@ -127,21 +117,184 @@ class ChemicalMasterEquation(CalculationsMixin):
 
     def _set_constitutive_states(self):
         with timeit() as set_constitutive_states:
-            if self._states_from == 'reactions':
-                self._build_constitutive_states_from_reactions()
-            elif self._states_from == 'combinatorics':
-                self._build_constitutive_states_from_combinatorics()
+            self._constitutive_states = self._build_constitutive_states()
         self.timings['t_build_states'] = set_constitutive_states.elapsed
 
     def _set_generator_matrix(self):
         with timeit() as set_G_matrix:
-            if self._states_from == 'reactions':
-                self._generator_matrix = self._build_generator_matrix_from_reactions()
-            elif self._states_from == 'combinatorics':
-                self._generator_matrix = self._build_generator_matrix_from_combinatorics()
+            self._generator_matrix = self.__build_generator_matrix_OLD()
         self.timings['t_build_G'] = set_G_matrix.elapsed
 
-    def _build_constitutive_states_from_reactions(self):
+    def _build_constitutive_states(self):
+        subspaces = [self._generate_subspace(constraint[-1], len(constraint)-1) for constraint in self._constraints]
+        if len(subspaces) > 1:
+            state_space = combine_state_spaces(*subspaces)
+        else:
+            state_space = np.stack(subspaces[0])
+        self.M = len(state_space)
+        return state_space
+
+    def _generate_subspace(self, constraint, N):
+        if '<=' in constraint:
+            cutoff = int(constraint.split('<=')[-1]) + 1
+            subspace = np.arange(cutoff)
+            return subspace.reshape(subspace.size, -1)
+        elif '=' in constraint:
+            cutoff = int(constraint.split('=')[-1]) + 1
+            subspace = [[n // cutoff**i % cutoff for i in range(N)] for n in range(cutoff**N)]
+            subspace = np.stack([np.flip(state) for state in subspace if sum(state) == cutoff-1])
+            return subspace
+
+    def _build_generator_matrix(self):
+
+        states = vector_to_number(self.states, base=self._constitutive_states.max()+1)
+        reactions = vector_to_number(self.reactions.reaction_matrix, base=self._constitutive_states.max()+1)
+
+        G_rows = [i for i in range(self.M)]
+        G_cols = [j for j in range(self.M)]
+        G_values = [0 for _ in range(self.M)]
+        self._nonzero_G_elements = {k: [] for k in range(len(self.reactions.reaction_matrix))}
+        for j, state_j in enumerate(states):
+            for k, reaction in enumerate(reactions):
+                state_i = state_j + reaction
+                i = binary_search(states, state_i)
+                if not i:
+                    # state_j + reaction_k was not in state space
+                    continue
+                n_ids = self.reactions.species_in_reaction[k]
+                lambda_ = self.reactions._rates[k][1]
+                h = np.prod([self.states[j,n] for n in n_ids])
+                propensity = h*lambda_
+                G_rows.append(i)
+                G_cols.append(j)
+                G_values.append(propensity)
+                G_values[j] -= propensity
+                self._nonzero_G_elements[k].append((i,j))
+
+        #G = SparseMatrix(np.array(G_rows), np.array(G_cols), np.array(G_values))
+        #return G
+
+    def _set_propagator_matrix(self, dt):
+        # dont really use this
+        with timeit() as t_exmp:
+            Q = expm(self._generator_matrix * dt)
+        self.timings['t_matrix_exponential'] = t_exmp.elapsed
+        self.Q = Q
+        self._dt = dt
+
+    def run(self, N_timesteps, dt=1, overwrite=False, continued=False):
+        """runs the chemical master equation simulation
+
+        Args:
+            N_timesteps:
+                number of timesteps
+            dt (1):
+                size of timestep that multiplies into generator matrix
+            overwrite (False):
+                set to `True` to rerun a simulation from scratch
+            continued (False):
+                set to `True` to concatenate separate trajectory segments
+        """
+
+        if self._trajectory is not None and not overwrite:
+            if not continued:
+                raise ValueError("Data from previous run found in `self.trajectory`. "
+                                 "To write over this data, set the `overwrite=True`")
+
+        self._run(N_timesteps, dt, overwrite, continued)
+
+    def _run(self, N_timesteps, dt, overwrite, continued):
+
+        M = self.M
+        if self.Q is None:
+            Q = expm(self._generator_matrix*dt)
+            self.Q = Q
+        else:
+            Q = self.Q
+
+        trajectory = np.empty(shape=(N_timesteps, M), dtype=np.float64)
+        if continued:
+            trajectory[0] = Q.dot(self._trajectory[-1])
+        else:
+            # fixing initial probability to be 1 in the intitial state
+            trajectory[0] = np.zeros(shape=M, dtype=np.float64)
+            trajectory[0, 0] = 1.0
+
+        with timeit() as run_time:
+            for ts in range(N_timesteps - 1):
+                trajectory[ts + 1] = Q.dot(trajectory[ts])
+        self.timings['t_run'] = run_time.elapsed
+
+        self._trajectory = np.vstack([self._trajectory, trajectory]) if continued else trajectory
+        self._dt = dt
+
+    def update_rates(self, new_rates):
+        """updates `self.rates` and `self.G` with new transition rates"""
+
+        for new_rate_string, new_rate_value in new_rates.items():
+            for k, old_rate in enumerate(self._rates):
+                if old_rate[0] == new_rate_string:
+                    if old_rate[1] == new_rate_value:
+                        propensity_adjustment_factor = 1
+                    else:
+                        #TODO: handle the old_rate=0 case
+                        propensity_adjustment_factor = new_rate_value / old_rate[1]
+                    # make sure to do this after saving the propensity factor
+                    self._rates[k][1] = new_rate_value
+                    self.rates[new_rate_string] = new_rate_value
+                    # the generator matrix also changes when the rates change
+                    G_elements_affected = self._nonzero_G_elements[k]
+                    for idx in G_elements_affected:
+                        i,j = idx[0], idx[1]
+                        self._generator_matrix[i,j] = self._generator_matrix[i,j] * propensity_adjustment_factor
+                    break
+            else:
+                raise KeyError(f'{new_rate_string} is not a valid rate for this system. Valid rates'
+                               f'are listed in `self.rates`.')
+        # need to redo the diagonal elements as well
+        for m in range(len(self._generator_matrix)):
+            self._generator_matrix[m,m] = 0
+            self._generator_matrix[m,m] = -np.sum(self._generator_matrix[:, m])
+
+    def reset_rates(self):
+        """resets `self.rates` to the values of the original config file"""
+
+        rates_from_config = [rate for rate in self.reactions._original_config['reactions'].values()]
+        original_rates = {rate[0]: rate[1] for rate in rates_from_config}
+        self.update_rates(original_rates)
+
+    def print_constitutive_states(self):
+        """generates a convenient readable list of the constitutive states"""
+
+        constitutive_states_strings: List[List[str]] = []
+        for state in self._constitutive_states:
+            word = []
+            for population_number, species in zip(state, self.species):
+                word.append(f'{population_number}{species}')
+            constitutive_states_strings.append(word)
+
+        return constitutive_states_strings
+
+    def print_generator_matrix(self):
+        """generates a convenient readable generator matrix with string names"""
+
+        M = len(self.G)
+        readable_G = [['0' for _ in range(M)] for _ in range(M)]
+        propensity_strings = self.reactions.print_propensities()
+        for k in range(len(self.reactions.reaction_matrix)):
+            for idx in self._nonzero_G_elements[k]:
+                i,j = idx
+                readable_G[i][j] = propensity_strings[k]
+        for j in range(M):
+            diagonal = '-('
+            for i in range(M):
+                if readable_G[i][j] != '0':
+                    diagonal += f'{readable_G[i][j]} + '
+            readable_G[j][j] = diagonal[:-3] + ')'
+
+        return readable_G
+
+    def __build_constitutive_states_OLD(self):
         """iteratively generates all possible constitutive states from the intial state"""
 
         constitutive_states = [self._initial_state]
@@ -190,34 +343,7 @@ class ChemicalMasterEquation(CalculationsMixin):
         self.M = len(constitutive_states)
         self._constitutive_states = np.array(constitutive_states, dtype=np.int32)
 
-    def _build_constitutive_states_from_combinatorics(self):
-        subspaces = []
-        for constraint_equation in self._constraints:
-            constraint = constraint_equation[-1]
-            N_species_involved = len(constraint_equation) - 1
-            subspaces.append(self._generate_subspace(constraint, N_species_involved))
-
-        if len(subspaces) > 1:
-            state_space = take_cartesian_products_recursively(*subspaces)
-        else:
-            state_space = np.stack(subspaces[0])
-
-        self.M = len(state_space)
-        self._constitutive_states = state_space
-
-    def _generate_subspace(self, constraint, N_species_involved):
-        if '<=' in constraint:
-            max_count = int(constraint.split('<=')[-1])
-            state_space = np.arange(max_count+1)
-            return state_space.reshape(state_space.size, -1)
-        elif '=' in constraint:
-            max_count = int(constraint.split('=')[-1])
-            state_space = [[n // (max_count + 1)**i % (max_count + 1) for i in range(N_species_involved)]
-                           for n in range((max_count + 1)**N_species_involved)]
-            state_space = np.stack([np.flip(state) for state in state_space if sum(state) == max_count])
-            return state_space
-
-    def _build_generator_matrix_from_reactions(self):
+    def __build_generator_matrix_OLD(self):
         M = self.M
         K = len(self.reactions.reaction_matrix)
         G = np.zeros(shape=(M, M), dtype=self._array_dtype)
@@ -239,191 +365,3 @@ class ChemicalMasterEquation(CalculationsMixin):
             # fix the diagonal to be the negative sum of the column
             G[i,i] = -np.sum(G[:,i])
         return G
-
-    def _build_generator_matrix_from_combinatorics(self):
-        max_value = self._constitutive_states.max() + 1
-        reactions_as_numbers = convert_vectors_to_numbers(self.reactions.reaction_matrix, len(self.species), max_value)
-        states_as_numbers = convert_vectors_to_numbers(self.states, len(self.species), max_value)
-        self._nonzero_G_elements = {k: [] for k in range(len(self.reactions.reaction_matrix))}
-        G = np.zeros(shape=(self.M, self.M), dtype=self._array_dtype)
-        for j, number_j in enumerate(states_as_numbers):
-            for k, reaction in enumerate(reactions_as_numbers):
-                number_i = number_j + reaction
-                i = binary_search(states_as_numbers, low=0, high=len(states_as_numbers)-1, x=number_i)
-                if i != -1:
-                    n_ids = self.reactions.propensity_ids[k]
-                    h = np.prod([self.states[j,n] for n in n_ids])
-                    lambda_ = self.reactions._rates[k][1]
-                    reaction_propensity = h*lambda_
-                    self._nonzero_G_elements[k].append((i,j,reaction_propensity))
-                    G[i,j] = reaction_propensity
-
-        for i in range(self.M):
-            # fix the diagonal to be the negative sum of the column
-            G[i, i] = -np.sum(G[:, i])
-        return G
-
-    def _set_propagator_matrix(self, dt):
-        # dont really use this
-        with timeit() as matrix_exponential:
-            Q = expm(self._generator_matrix * dt)
-        self.timings['t_matrix_exponential'] = matrix_exponential.elapsed
-        self.Q = Q
-        self._dt = dt
-
-    def run(self, start: float, stop:float , dt:float = 1,
-            overwrite: bool = False, continued: bool = False):
-        """runs the chemical master equation simulation
-
-        Args:
-            start:
-                initial time value
-            stop:
-                final time value
-            dt (1):
-                size of timestep that multiplies into generator matrix
-            overwrite (False):
-                set to `True` to rerun a simulation from scratch
-            continued (False):
-                set to `True` to concatenate separate trajectory segments
-        """
-
-        if self._trajectory is not None and not overwrite:
-            if not continued:
-                raise ValueError("Data from previous run found in `self.trajectory`. "
-                                 "To write over this data, set the `overwrite=True`")
-
-        self._run(start, stop, dt, overwrite, continued)
-
-    def _run(self, start, stop, dt, overwrite, continued):
-
-        # using np.round to avoid floating point precision errors
-        n_timesteps = int(np.round((stop - start) / dt))
-        M = self.M
-
-        #if self._low_memory:
-            #Q = expm(self._build_generator_matrix() * dt)
-        #else:
-        if self.Q is None:
-            Q = expm(self._generator_matrix * dt)
-            self.Q = Q
-        else:
-            Q = self.Q
-
-        trajectory = np.empty(shape=(n_timesteps, M), dtype=self._array_dtype)
-        if continued:
-            trajectory[0] = Q.dot(self._trajectory[-1])
-        else:
-            # fixing initial probability to be 1 in the intitial state
-            trajectory[0] = np.zeros(shape=M, dtype=self._array_dtype)
-            trajectory[0, 0] = 1.0
-
-        with timeit() as run_time:
-            for ts in range(n_timesteps - 1):
-                trajectory[ts + 1] = Q.dot(trajectory[ts])
-        self.timings['t_run'] = run_time.elapsed
-
-        self._trajectory = np.vstack([self._trajectory, trajectory]) if continued else trajectory
-        self._dt = dt
-
-    def reset_rates(self):
-        """resets `self.rates` to the values of the original config file"""
-
-        rates_from_config = [rate for rate in self.reactions._original_config['reactions'].values()]
-        original_rates = {rate[0]: rate[1] for rate in rates_from_config}
-        self.update_rates(original_rates)
-
-    def update_rates(self, new_rates):
-        """updates `self.rates` and `self.G` with new transition rates"""
-
-        for new_rate_string, new_rate_value in new_rates.items():
-            for k, old_rate in enumerate(self._rates):
-                if old_rate[0] == new_rate_string:
-                    if old_rate[1] == new_rate_value:
-                        propensity_adjustment_factor = 1
-                    else:
-                        #TODO: handle the old_rate=0 case
-                        propensity_adjustment_factor = new_rate_value / old_rate[1]
-                    # make sure to do this after saving the propensity factor
-                    self._rates[k][1] = new_rate_value
-                    self.rates[new_rate_string] = new_rate_value
-                    # the generator matrix also changes when the rates change
-                    G_elements_affected = self._nonzero_G_elements[k]
-                    for idx in G_elements_affected:
-                        i,j = idx[0], idx[1]
-                        self._generator_matrix[i,j] = self._generator_matrix[i,j] * propensity_adjustment_factor
-                    break
-            else:
-                raise KeyError(f'{new_rate_string} is not a valid rate for this system. Valid rates'
-                               f'are listed in `self.rates`.')
-        # need to redo the diagonal elements as well
-        for m in range(len(self._generator_matrix)):
-            self._generator_matrix[m,m] = 0
-            self._generator_matrix[m,m] = -np.sum(self._generator_matrix[:, m])
-
-    def write(self, filename, mode='r+', trajectory_name=None):
-        """writes simulation data to an hdf5 file"""
-
-        if not Path(filename).exists():
-            # if this is a fresh file
-            self._write_system_info(filename, mode='x')
-
-        if trajectory_name:
-            if self.trajectory is None:
-                raise ValueError("no data in `self.trajectory`")
-            self._write_trajectory(filename, mode, trajectory_name)
-
-    def _write_system_info(self, filename, mode):
-        with CMEWriter(filename, system=self, mode=mode) as W:
-            # basic reaction info
-            W._dump_config()
-            if not self._low_memory:
-                W._create_dataset('constitutive_states', data=self.states)
-            for k, indices in self._nonzero_G_elements.items():
-                W._create_dataset(f'nonzero_G_elements/{k}', data=np.array(indices))
-            for species, count in self._initial_populations.items():
-                W._create_dataset(f'initial_populations/{species}', data=np.array(count))
-            if self._max_populations:
-                for species, count in self._max_populations.items():
-                    W._create_dataset(f'max_populations/{species}', data=np.array(count))
-
-    def _write_trajectory(self, filename, mode, trajectory_name):
-        with CMEWriter(filename, system=self, mode=mode) as W:
-            traj_group = W._require_group('trajectories')
-            if trajectory_name is None:
-                trajectory_name = f'trajectory00{len(traj_group) + 1}'
-            W._create_dataset(f'trajectories/{trajectory_name}/trajectory', data=self.trajectory)
-            for rate, value in self.rates.items():
-                rate_group = W._create_group(f'trajectories/{trajectory_name}/rates/{rate}')
-                W._set_attr(rate_group, name='value', value=value)
-
-    def print_constitutive_states(self):
-        """generates a convenient readable list of the constitutive states"""
-
-        constitutive_states_strings: List[List[str]] = []
-        for state in self._constitutive_states:
-            word = []
-            for population_number, species in zip(state, self.species):
-                word.append(f'{population_number}{species}')
-            constitutive_states_strings.append(word)
-
-        return constitutive_states_strings
-
-    def print_generator_matrix(self):
-        """generates a convenient readable generator matrix with string names"""
-
-        M = len(self.G)
-        readable_G = [['0' for _ in range(M)] for _ in range(M)]
-        propensity_strings = self.reactions.print_propensities()
-        for k in range(len(self.reactions.reaction_matrix)):
-            for idx in self._nonzero_G_elements[k]:
-                i,j = idx
-                readable_G[i][j] = propensity_strings[k]
-        for j in range(M):
-            diagonal = '-('
-            for i in range(M):
-                if readable_G[i][j] != '0':
-                    diagonal += f'{readable_G[i][j]} + '
-            readable_G[j][j] = diagonal[:-3] + ')'
-
-        return readable_G
