@@ -7,6 +7,7 @@ from .reactions import ReactionNetwork
 from ..calculations import CalculationsMixin
 from ..math_utils import combine_state_spaces, vector_to_number, binary_search
 from ..utils import timeit
+from ..sparse_matrix import SparseMatrix
 
 
 class ChemicalMasterEquation(CalculationsMixin):
@@ -105,7 +106,6 @@ class ChemicalMasterEquation(CalculationsMixin):
             assert len(self._initial_state) == self.N
             # initial state was specified by the user
             return
-
         if self._max_populations:
             for species in self._max_populations.keys():
                 if species not in self.species:
@@ -185,9 +185,8 @@ class ChemicalMasterEquation(CalculationsMixin):
                 k_to_G_map[k].append((i,j))
 
         self._k_to_G_map = k_to_G_map
-        return G_rows, G_cols, G_values
-        #G = SparseMatrix(np.array(G_rows), np.array(G_cols), np.array(G_values))
-        #return G
+        G = SparseMatrix(np.array(G_rows), np.array(G_cols), np.array(G_values))
+        return G
 
     def run(self, N_timesteps, dt=1, overwrite=False, continued=False):
         """runs the chemical master equation simulation
