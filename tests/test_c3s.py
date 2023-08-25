@@ -53,7 +53,7 @@ class BaseTest:
         assert_equal(system.M, self.M)
 
     def test_generator_matrix(self, system):
-        ...
+        assert_array_equal(system.G.to_dense(), self.G_dense)
 
     def test_changing_rates(self, system):
         ...

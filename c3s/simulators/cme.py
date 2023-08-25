@@ -2,12 +2,13 @@ from typing import List, Dict
 
 import numpy as np
 from scipy.sparse.linalg import expm
+from numba import njit
 
 from .reactions import ReactionNetwork
 from ..calculations import CalculationsMixin
 from ..math_utils import combine_state_spaces, vector_to_number, binary_search
 from ..utils import timeit
-from ..sparse_matrix import SparseMatrix
+from ..sparse_matrix import sparse_matrix, sm_times_array
 
 
 class ChemicalMasterEquation(CalculationsMixin):
@@ -62,6 +63,8 @@ class ChemicalMasterEquation(CalculationsMixin):
         self._generator_matrix = None
         self._nonzero_G_elements = None
         self._trajectory = None
+        self.Q = None
+        self.B = None
 
         # dictionary to hold timings of various codeblocks for benchmarking
         self.timings: Dict[str, float] = {}
@@ -128,7 +131,7 @@ class ChemicalMasterEquation(CalculationsMixin):
 
     def _set_generator_matrix(self):
         with timeit() as set_G_matrix:
-            self._rows, self._cols, self.values = self._build_generator_matrix()
+            self._generator_matrix = self._build_generator_matrix()
         self.timings['t_build_G'] = set_G_matrix.elapsed
 
     def _build_state_space(self):
@@ -152,8 +155,7 @@ class ChemicalMasterEquation(CalculationsMixin):
     def _build_generator_matrix(self):
 
         M, K, N = self.M, self.K, self.N
-
-        G_rows = [i for i in range(M)]
+        G_lines = [i for i in range(M)]
         G_cols = [j for j in range(M)]
         G_values = [0 for _ in range(M)]
         # gives which elements of G the k'th reaction is responsible for
@@ -165,30 +167,31 @@ class ChemicalMasterEquation(CalculationsMixin):
         for j, state_j in enumerate(states):
             for k, reaction in enumerate(reactions):
                 state_i = state_j + reaction
-                # find index of state_i in state space
+                # returns index of state_i if exists, else -1
                 i = binary_search(states, state_i)
-                if not i:
+                if i == -1:
                     # state_j + reaction_k was not in state space
                     continue
                 # indices of which species are involved in k'th reaction
                 ids = self.reaction_network.species_in_reaction[k]
                 # the elementary transition rate of the k'th reaction
                 rate = self._rates[k]
-                # the combinatorial factor associated for the k'th reaction for the j'th state
+                # the combinatorial factor for the k'th reaction firing in the j'th state
                 h = np.prod([self.states[j,n] for n in ids])
-                # overall reaction propensity from the j'th state
+                # overall reaction propensity for j -> i
                 propensity = h * rate
-                G_rows.append(i)
-                G_cols.append(j)
-                G_values.append(propensity)
-                G_values[j] -= propensity
-                k_to_G_map[k].append((i,j))
+                if propensity != 0:
+                    G_lines.append(i)
+                    G_cols.append(j)
+                    G_values.append(propensity)
+                    G_values[j] -= propensity
+                    k_to_G_map[k].append((i,j))
 
         self._k_to_G_map = k_to_G_map
-        G = SparseMatrix(np.array(G_rows), np.array(G_cols), np.array(G_values))
-        return G
+        generator_matrix = sparse_matrix(np.array(G_lines), np.array(G_cols), np.array(G_values, dtype=np.float64))
+        return generator_matrix
 
-    def run(self, N_timesteps, dt=1, overwrite=False, continued=False):
+    def run(self, N_timesteps, dt=1, overwrite=False, continued=False, method=None):
         """runs the chemical master equation simulation
 
         Args:
@@ -205,25 +208,53 @@ class ChemicalMasterEquation(CalculationsMixin):
         if self._trajectory is not None and not overwrite:
             if not continued:
                 raise ValueError("Data from previous run found in `self.trajectory`. "
-                                 "To write over this data, set the `overwrite=True`")
+                                 "To write over this data, set `overwrite=True`")
 
-        self._run(N_timesteps, dt, overwrite, continued)
-
-    def _run(self, N_timesteps, dt, overwrite, continued):
-
-        M = self.M
-        if self.Q is None:
-            Q = expm(self._generator_matrix*dt)
-            self.Q = Q
-        else:
-            Q = self.Q
-
-        trajectory = np.empty(shape=(N_timesteps, M), dtype=np.float64)
+        self._dt = dt
+        trajectory = np.empty(shape=(N_timesteps, self.M), dtype=np.float64)
         if continued:
             trajectory[0] = Q.dot(self._trajectory[-1])
         else:
             # fixing initial probability to be 1 in the initial state
-            trajectory[0] = np.zeros(shape=M, dtype=np.float64)
+            trajectory[0] = np.zeros(shape=self.M, dtype=np.float64)
+            trajectory[0, 0] = 1.0
+        if method == 'IMU':
+            self._run_IMU(N_timesteps, continued)
+        if method == 'EXPM':
+            self._run_exponential(N_timesteps, continued)
+
+    @njit
+    def _run_IMU(self, N_timesteps, continued):
+        if self.B is None:
+            self.B, self.Omega = self._get_B()
+
+        with timeit() as t_run_IMU:
+            for ts in range(N_timesteps - 1):
+                trajectory = np.empty(shape=(N_timesteps, self.M), dtype=np.float64)
+                if continued:
+                    trajectory[0] = Q.dot(self._trajectory[-1])
+                else:
+                    # fixing initial probability to be 1 in the initial state
+                    trajectory[0] = np.zeros(shape=self.M, dtype=np.float64)
+                    trajectory[0, 0] = 1.0
+
+
+
+    def _run_exponential(self, N_timesteps, continued):
+        if self.Q is None:
+            with timeit() as t_matrix_exponential:
+                Q = expm(self._generator_matrix.to_dense() * self._dt)
+                self.timings['t_matrix_exponential'] = t_matrix_exponential.elapsed
+            self.Q = Q
+        else:
+            Q = self.Q
+
+        trajectory = np.empty(shape=(N_timesteps, self.M), dtype=np.float64)
+        if continued:
+            trajectory[0] = Q.dot(self._trajectory[-1])
+        else:
+            # fixing initial probability to be 1 in the initial state
+            trajectory[0] = np.zeros(shape=self.M, dtype=np.float64)
             trajectory[0, 0] = 1.0
 
         with timeit() as run_time:
@@ -232,7 +263,32 @@ class ChemicalMasterEquation(CalculationsMixin):
         self.timings['t_run'] = run_time.elapsed
 
         self._trajectory = np.vstack([self._trajectory, trajectory]) if continued else trajectory
-        self._dt = dt
+
+    def _get_B(self, scale=1.1):
+        M = self.M
+        G_max = abs(max(self.G.values, key=abs))
+        Omega = scale * G_max
+        B_values = self.G.values / Omega
+        B_values[:M] = B_values[:M] + 1
+        return sparse_matrix(self.G.lines, self.G.columns, B_values), Omega
+
+    def _IMU_timestep(self, p_0, B, OmegaT):
+        p = p_0
+        log_poisson_factor = (-OmegaT)  # poisson factor log
+        poisson_factor_cumulative = np.exp(log_poisson_factor)
+
+        sum_ = p * np.exp(log_poisson_factor)
+        k_max = OmegaT + 6 * np.sqrt(OmegaT)
+        for k in np.arange(1, k_max):
+            log_poisson_factor += np.log(OmegaT / k)
+            pf = np.exp(log_poisson_factor)
+            poisson_factor_cumulative += pf
+            p = sm_times_array(B, p)
+            sum_ += p * pf
+
+        # guarantees sum_ sums to 1
+        sum_ += p * (1.0 - poisson_factor_cumulative)
+        return sum_
 
     def update_rates(self, new_rates):
         """updates `self.rates` and `self.G` with new transition rates"""

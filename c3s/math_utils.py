@@ -14,7 +14,7 @@ def binary_search(vector, x, low=0, high=None):
         else:
             return binary_search(vector, x, low=mid+1, high=high)
     else:
-        return False
+        return -1
 
 
 def cartesian_product(space_1, space_2):

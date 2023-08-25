@@ -1,40 +1,6 @@
 import numpy as np
-from numba import njit,typed,types
+from numba import njit, typed, types
 from numba.experimental import jitclass
-
-
-@jitclass([
-    ('rows', types.int64[:]),
-    ('cols', types.int64[:]),
-    ('values', types.float64[:]),
-    ('shape', types.int64)])
-class SparseMatrix:
-
-    def __init__(self, rows, cols, values, shape=None):
-        self.rows = rows
-        self.cols = cols
-        self.values = values
-        if shape is None:
-            self.shape = len(self.rows)
-
-    def __add__(self, other):
-        return SparseMatrix(np.concatenate(self.rows, other.rows),
-                            np.concatenate(self.cols, other.cols),
-                            np.concatenate(self.values, other.values),
-                            np.max(self.shape, other.shape))
-
-    def __sub__(self, other):
-        return SparseMatrix(np.concatenate(self.rows, other.rows),
-                            np.concatenate(self.cols, other.cols),
-                            np.concatenate(self.values, -other.values),
-                            np.max(self.shape, other.shape))
-
-    def __mul__(self, other):
-        ...
-
-@njit
-def mat_times_mat(mat1, mat2):
-    ...
 
 
 @njit
@@ -90,6 +56,57 @@ def simplify_sparse_matrix(lines, columns, values):
             simplified_cols.append(c)
             simplified_values.append(v)
     return np.array(simplified_lines), np.array(simplified_cols), np.array(simplified_values)
+
+
+@jitclass([('lines', types.int64[:]),
+           ('columns', types.int64[:]),
+           ('values', types.float64[:]),
+           ('shape', types.int64)])
+class sparse_matrix:
+    def __init__(self, lins, cols, values, shap=0):
+        self.lines = lins
+        self.columns = cols
+        self.values = values
+        self.shape = shap
+        if shap == 0:
+            self.shape = 1 + lins.max()  # assume always square
+
+    def __add__(self, other):
+        return sparse_matrix(np.concatenate((self.lines, other.lines)),
+                             np.concatenate((self.columns, other.columns)),
+                             np.concatenate((self.values, other.values)),
+                             max(self.shape, other.shape))
+
+    def __sub__(self, other):
+        return sparse_matrix(np.concatenate((self.lines, other.lines)),
+                             np.concatenate((self.columns, other.columns)),
+                             np.concatenate((self.values, -other.values)),
+                             max(self.shape, other.shape))
+
+    def to_dense(self):
+        return sm_asarray(self.lines, self.columns, self.values, self.shape)
+
+    def line_sum(self):
+        return sm_sum(self.lines, self.columns, self.values, self.shape)
+
+    def column_sum(self):
+        return sm_sum(self.columns, self.lines, self.values, self.shape)
+
+    def simplify(self):
+        self.lines, self.columns, self.values = simplify_sparse_matrix(self.lines, self.columns, self.values)
+        ind1 = np.argsort(self.columns)
+        self.lines, self.columns, self.values = self.lines[ind1], self.columns[ind1], self.values[ind1]
+        ind2 = np.argsort(self.lines)
+        self.lines, self.columns, self.values = self.lines[ind2], self.columns[ind2], self.values[ind2]
+
+    def __mul__(self, other):
+        if other.shape != self.shape:
+            print('Warning: you are trying to multiply square matrices of different shapes')
+        prod = sparse_matrix(
+            *multiply_sparse_matrices(self.lines, self.columns, self.values, other.lines, other.columns, other.values),
+            self.shape)
+        prod.simplify()
+        return prod
 
 
 @njit
