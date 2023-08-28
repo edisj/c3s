@@ -2,13 +2,12 @@ from typing import List, Dict
 
 import numpy as np
 from scipy.sparse.linalg import expm
-from numba import njit
 
 from .reactions import ReactionNetwork
 from ..calculations import CalculationsMixin
-from ..math_utils import combine_state_spaces, vector_to_number, binary_search
+from ..math_utils import combine_state_spaces, vector_to_number, binary_search, solve_IMU
 from ..utils import timeit
-from ..sparse_matrix import sparse_matrix, sm_times_array
+from ..sparse_matrix import sparse_matrix
 
 
 class ChemicalMasterEquation(CalculationsMixin):
@@ -216,18 +215,18 @@ class ChemicalMasterEquation(CalculationsMixin):
         if method == 'EXPM':
             self._run_exponential(N_timesteps, continued)
 
-    #@njit
     def _run_IMU(self, N_timesteps, continued):
 
         if self.B is None:
             with timeit() as t_B:
-                self.B, self.Omega = self._get_B()
+                self._Omega = self._get_Omega()
+                self.B = self._get_B()
             self.timings['t_B'] = t_B.elapsed
 
-        OmegaT = self.Omega * self._dt
+        OmegaT = self._Omega * self._dt
         trajectory = np.empty(shape=(N_timesteps, self.M), dtype=np.float64)
         if continued:
-            trajectory[0] = self._IMU_timestep(p_0=self._trajectory[-1], B=self.B, OmegaT=OmegaT)
+            trajectory[0] = solve_IMU(p_0=self._trajectory[-1], B=self.B, OmegaT=OmegaT)
         else:
             # fixing initial probability to be 1 in the initial state
             trajectory[0] = np.zeros(shape=self.M, dtype=np.float64)
@@ -235,7 +234,7 @@ class ChemicalMasterEquation(CalculationsMixin):
 
         with timeit() as t_run:
             for ts in range(N_timesteps - 1):
-                trajectory[ts + 1] = self._IMU_timestep(p_0=trajectory[ts], B=self.B, OmegaT=OmegaT)
+                trajectory[ts + 1] = solve_IMU(p_0=trajectory[ts], B=self.B, OmegaT=OmegaT)
         self.timings['t_run_IMU'] = t_run.elapsed
 
         self._trajectory = np.vstack([self._trajectory, trajectory]) if continued else trajectory
@@ -264,31 +263,14 @@ class ChemicalMasterEquation(CalculationsMixin):
 
         self._trajectory = np.vstack([self._trajectory, trajectory]) if continued else trajectory
 
-    def _get_B(self, scale=1.1):
-        M = self.M
+    def _get_Omega(self, scale=1.1):
         G_max = abs(max(self.G.values, key=abs))
-        Omega = scale * G_max
-        B_values = self.G.values / Omega
-        B_values[:M] = B_values[:M] + 1
-        return sparse_matrix(self.G.lines, self.G.columns, B_values), Omega
+        return G_max * scale
 
-    def _IMU_timestep(self, p_0, B, OmegaT):
-        p = p_0
-        log_poisson_factor = (-OmegaT)  # poisson factor log
-        poisson_factor_cumulative = np.exp(log_poisson_factor)
-
-        sum_ = p * np.exp(log_poisson_factor)
-        k_max = OmegaT + 6 * np.sqrt(OmegaT)
-        for k in np.arange(1, k_max):
-            log_poisson_factor += np.log(OmegaT / k)
-            pf = np.exp(log_poisson_factor)
-            poisson_factor_cumulative += pf
-            p = sm_times_array(B, p)
-            sum_ += p * pf
-
-        # guarantees sum_ sums to 1
-        sum_ += p * (1.0 - poisson_factor_cumulative)
-        return sum_
+    def _get_B(self):
+        B_values = self.G.values / self._Omega
+        B_values[:self.M] = B_values[:self.M] + 1
+        return sparse_matrix(self.G.lines, self.G.columns, B_values)
 
     def update_rates(self, new_rates):
         """updates `self.rates` and `self.G` with new transition rates"""

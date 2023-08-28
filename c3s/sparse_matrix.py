@@ -3,6 +3,8 @@ from numba import njit, typed, types
 from numba.experimental import jitclass
 
 
+"""citation"""
+
 @njit
 def sm_asarray(lines, columns, values, shape):
     res = np.zeros((shape, shape))

@@ -1,4 +1,6 @@
 import numpy as np
+from numba import njit
+from .sparse_matrix import sm_times_array
 
 
 def binary_search(vector, x, low=0, high=None):
@@ -15,6 +17,27 @@ def binary_search(vector, x, low=0, high=None):
             return binary_search(vector, x, low=mid+1, high=high)
     else:
         return -1
+
+
+@njit
+def solve_IMU(p_0, B, OmegaT):
+    """Inverse Marginalized Uniformization"""
+
+    log_poisson_factor = -OmegaT
+    poisson_factor_cumulative = np.exp(log_poisson_factor)
+
+    sum_ = p_0 * np.exp(log_poisson_factor)
+    k_max = OmegaT + 6 * np.sqrt(OmegaT)
+    for k in np.arange(1, k_max):
+        log_poisson_factor += np.log(OmegaT / k)
+        pf = np.exp(log_poisson_factor)
+        poisson_factor_cumulative += pf
+        p_0 = sm_times_array(B, p_0)
+        sum_ += p_0 * pf
+
+    # guarantees sum_ sums to 1
+    sum_ += p_0 * (1.0 - poisson_factor_cumulative)
+    return sum_
 
 
 def cartesian_product(space_1, space_2):
