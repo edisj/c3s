@@ -211,40 +211,40 @@ class ChemicalMasterEquation(CalculationsMixin):
                                  "To write over this data, set `overwrite=True`")
 
         self._dt = dt
-        trajectory = np.empty(shape=(N_timesteps, self.M), dtype=np.float64)
-        if continued:
-            trajectory[0] = Q.dot(self._trajectory[-1])
-        else:
-            # fixing initial probability to be 1 in the initial state
-            trajectory[0] = np.zeros(shape=self.M, dtype=np.float64)
-            trajectory[0, 0] = 1.0
         if method == 'IMU':
             self._run_IMU(N_timesteps, continued)
         if method == 'EXPM':
             self._run_exponential(N_timesteps, continued)
 
-    @njit
+    #@njit
     def _run_IMU(self, N_timesteps, continued):
+
         if self.B is None:
-            self.B, self.Omega = self._get_B()
+            with timeit() as t_B:
+                self.B, self.Omega = self._get_B()
+            self.timings['t_B'] = t_B.elapsed
 
-        with timeit() as t_run_IMU:
+        OmegaT = self.Omega * self._dt
+        trajectory = np.empty(shape=(N_timesteps, self.M), dtype=np.float64)
+        if continued:
+            trajectory[0] = self._IMU_timestep(p_0=self._trajectory[-1], B=self.B, OmegaT=OmegaT)
+        else:
+            # fixing initial probability to be 1 in the initial state
+            trajectory[0] = np.zeros(shape=self.M, dtype=np.float64)
+            trajectory[0, 0] = 1.0
+
+        with timeit() as t_run:
             for ts in range(N_timesteps - 1):
-                trajectory = np.empty(shape=(N_timesteps, self.M), dtype=np.float64)
-                if continued:
-                    trajectory[0] = Q.dot(self._trajectory[-1])
-                else:
-                    # fixing initial probability to be 1 in the initial state
-                    trajectory[0] = np.zeros(shape=self.M, dtype=np.float64)
-                    trajectory[0, 0] = 1.0
+                trajectory[ts + 1] = self._IMU_timestep(p_0=trajectory[ts], B=self.B, OmegaT=OmegaT)
+        self.timings['t_run_IMU'] = t_run.elapsed
 
-
+        self._trajectory = np.vstack([self._trajectory, trajectory]) if continued else trajectory
 
     def _run_exponential(self, N_timesteps, continued):
         if self.Q is None:
             with timeit() as t_matrix_exponential:
                 Q = expm(self._generator_matrix.to_dense() * self._dt)
-                self.timings['t_matrix_exponential'] = t_matrix_exponential.elapsed
+            self.timings['t_matrix_exponential'] = t_matrix_exponential.elapsed
             self.Q = Q
         else:
             Q = self.Q
@@ -260,7 +260,7 @@ class ChemicalMasterEquation(CalculationsMixin):
         with timeit() as run_time:
             for ts in range(N_timesteps - 1):
                 trajectory[ts + 1] = Q.dot(trajectory[ts])
-        self.timings['t_run'] = run_time.elapsed
+        self.timings['t_run_exp'] = run_time.elapsed
 
         self._trajectory = np.vstack([self._trajectory, trajectory]) if continued else trajectory
 
