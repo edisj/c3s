@@ -30,7 +30,7 @@ class CalculationsMixin:
 
         with timeit() as calculation_block:
             mut_inf = np.zeros(shape=N_timesteps, dtype=np.float64)
-            mi_terms = [{} for _ in range(N_timesteps)]
+            #mi_terms = [{} for _ in range(N_timesteps)]
             for ts in range(N_timesteps):
                 P = self.trajectory[ts]
                 mi_sum = 0
@@ -51,23 +51,23 @@ class CalculationsMixin:
                         p_y = np.dot(P, Dy)
                         this_term = p_xy * math.log(p_xy / (p_x * p_y), base)
                         mi_sum += this_term
-                        mi_terms[ts][xy] = this_term
+                        #mi_terms[ts][xy] = this_term
                 mut_inf[ts] = mi_sum
 
         self.timings[f't_calculate_insant_mi'] = calculation_block.elapsed
-        self._mutual_information = mut_inf
+        #self._mutual_information = mut_inf
 
-        return mut_inf, mi_terms
+        return mut_inf#, mi_terms
 
     def _fix_species_and_get_Deltas(self, X, Y):
         if isinstance(X, str):
             X = [X]
         if isinstance(Y, str):
             Y = [Y]
-        X = sorted(X)
-        Y = sorted(Y)
-        if X + Y != sorted(X + Y):
-            X, Y = Y, X
+        #X = sorted(X)
+        #Y = sorted(Y)
+        #if X + Y != sorted(X + Y):
+        #    X, Y = Y, X
 
         DeltaTuple = namedtuple("Deltas", "x y xy")
         Deltas = DeltaTuple(
@@ -81,8 +81,8 @@ class CalculationsMixin:
         if isinstance(molecules, str):
             molecules = [molecules]
         # indices that correspond to the selected molecular species in the ordered species list
-        ids = [self.species.index(n) for n in molecules]
-        truncated_points = np.array(self._constitutive_states)[:, ids]
+        n_ids = [self.species.index(n) for n in molecules]
+        truncated_points = np.array(self._constitutive_states)[:, n_ids]
 
         Delta_vectors: Dict[tuple, np.ndarray] = {}
 
@@ -288,7 +288,7 @@ class CalculationsMixin:
         ids = [self.species.index(n) for n in sorted(molecules)]
         truncated_points = np.array(self._constitutive_states)[:, ids]
 
-        # keys are tuple coordinates of the marginal distrubtion
+        # keys are tuple coordinates of the marginal distribution
         # values are the indices of the joint distribution points that map to the marginal point
         point_maps: Dict[tuple, List[int]] = {}
 

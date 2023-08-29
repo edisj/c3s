@@ -1,0 +1,15 @@
+---
+reactions:
+  A -> B: [k_AB, 1]
+  B -> A: [k_BA, 1]
+  B -> C: [k_BC, 1]
+  C -> B: [k_CB, 1]
+  C -> D: [k_CD, 1]
+  D -> C: [k_DC, 1]
+  D -> A: [k_DA, 1]
+  A -> D: [k_AD, 1]
+  X -> Y: [k_XY, 2]
+  Y -> X: [k_YX, 2]
+constraints:
+  - A + B + C + D = 1
+  - X + Y = 1

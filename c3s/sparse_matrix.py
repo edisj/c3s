@@ -137,13 +137,13 @@ def sum(sm, axis=-1):
 
 
 def dot(A, B):
-    if isinstance(A, sparse_matrix):
-        if isinstance(B, sparse_matrix):
+    if isinstance(A, SparseMatrix):
+        if isinstance(B, SparseMatrix):
             return A * B
         if isinstance(B, np.ndarray):
             return sm_times_array(A, B)
     elif isinstance(A, np.ndarray):
-        if isinstance(B, sparse_matrix):
+        if isinstance(B, SparseMatrix):
             return array_times_sm(A, B)
         if isinstance(B, np.ndarray):
             return np.dot(A, B)

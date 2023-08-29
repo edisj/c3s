@@ -8,7 +8,7 @@ import math
 from c3s import ChemicalMasterEquation as CME
 from c3s.h5io import read, write
 from numpy.testing import assert_almost_equal, assert_equal, assert_array_almost_equal,assert_array_equal
-from .reference import RefBinary, Ref2IsoBinary
+from .reference import RefBinary, Ref2and2Iso, Ref4and2Iso
 
 
 def test_c3s_imported():
@@ -96,7 +96,7 @@ class TestBinary(BaseTest, RefBinary):
                                    1.67229091, 1.71971752, 1.75060155, 1.77091263, 1.78435647])'''
 
 
-class Test2IsoBinary(BaseTest, Ref2IsoBinary):
+class Test2and2Iso(BaseTest, Ref2and2Iso):
     pass
     '''def test_mutual_information_iso_switches(self, isolated_switches):
 
@@ -110,14 +110,21 @@ class Test2IsoBinary(BaseTest, Ref2IsoBinary):
         assert_array_almost_equal(mut_inf[0::10], correct_values)'''
 
 
+class Test4and2Iso(BaseTest, Ref4and2Iso):
+    pass
+
 '''class TestH5IO:
+
+    @pytest.fixture()
+    def system(self):
+        return CME(config=self.reactions_file)
 
     @pytest.fixture()
     def outfile(self, tmpdir):
         yield str(tmpdir) + 'c3s_write_test.h5'
 
     def test_file_io(self, outfile):
-        system = ChemicalMasterEquation(config='config_files/2_isolated_switches.yml',
+        system = ChemicalMasterEquation(config='config_files/2+2_isolated.yml',
                                         initial_populations={'A': 1, 'B': 1})
         system.run()
 
