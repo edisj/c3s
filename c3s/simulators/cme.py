@@ -7,7 +7,7 @@ from .reactions import ReactionNetwork
 from ..calculations import CalculationsMixin
 from ..math_utils import combine_state_spaces, vector_to_number, binary_search, solve_IMU
 from ..utils import timeit
-from ..sparse_matrix import sparse_matrix
+from ..sparse_matrix import SparseMatrix
 
 
 class ChemicalMasterEquation(CalculationsMixin):
@@ -158,16 +158,17 @@ class ChemicalMasterEquation(CalculationsMixin):
         G_cols = [j for j in range(M)]
         G_values = [0 for _ in range(M)]
         # gives which elements of G the k'th reaction is responsible for
-        k_to_G_map = {k: [] for k in range(K)}
+        k_to_G_map = {k: [] for k in range(self.K)}
 
         base = self._constitutive_states.max() + 1
-        states = vector_to_number(self._constitutive_states, N, base)
-        reactions = vector_to_number(self.reaction_network.reaction_matrix, N, base)
-        for j, state_j in enumerate(states):
-            for k, reaction in enumerate(reactions):
+        states_as_numbers = vector_to_number(self._constitutive_states, N, base)
+        max_state = states_as_numbers.max()
+        reactions_as_numbers = vector_to_number(self.reaction_network.reaction_matrix, N, base)
+        for j, state_j in enumerate(states_as_numbers):
+            for k, reaction in enumerate(reactions_as_numbers):
                 state_i = state_j + reaction
                 # returns index of state_i if exists, else -1
-                i = binary_search(states, state_i)
+                i = binary_search(states_as_numbers, state_i)
                 if i == -1:
                     # state_j + reaction_k was not in state space
                     continue
@@ -187,7 +188,7 @@ class ChemicalMasterEquation(CalculationsMixin):
                     k_to_G_map[k].append((i,j))
 
         self._k_to_G_map = k_to_G_map
-        generator_matrix = sparse_matrix(np.array(G_lines), np.array(G_cols), np.array(G_values, dtype=np.float64))
+        generator_matrix = SparseMatrix(np.array(G_lines), np.array(G_cols), np.array(G_values, dtype=np.float64))
         return generator_matrix
 
     def run(self, N_timesteps, dt=1, overwrite=False, continued=False, method=None):
@@ -270,7 +271,7 @@ class ChemicalMasterEquation(CalculationsMixin):
     def _get_B(self):
         B_values = self.G.values / self._Omega
         B_values[:self.M] = B_values[:self.M] + 1
-        return sparse_matrix(self.G.lines, self.G.columns, B_values)
+        return SparseMatrix(self.G.lines, self.G.columns, B_values)
 
     def update_rates(self, new_rates):
         """updates `self.rates` and `self.G` with new transition rates"""

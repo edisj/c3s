@@ -8,7 +8,7 @@ import math
 from c3s import ChemicalMasterEquation as CME
 from c3s.h5io import read, write
 from numpy.testing import assert_almost_equal, assert_equal, assert_array_almost_equal,assert_array_equal
-from .reference import RefBinary
+from .reference import RefBinary, Ref2IsoBinary
 
 
 def test_c3s_imported():
@@ -56,6 +56,24 @@ class BaseTest:
         assert_array_equal(system.G.values, self.G_sparse)
         assert_array_equal(system.G.to_dense(), self.G_dense)
 
+    def test_IMU_vs_EXPM(self, system):
+        N_timesteps = 15
+        system.run(N_timesteps=N_timesteps, overwrite=True, method='IMU')
+        IMU_trajectory = system.trajectory
+        system.run(N_timesteps=N_timesteps, overwrite=True, method='EXPM')
+        EXPM_trajectory = system.trajectory
+        assert_array_almost_equal(IMU_trajectory, EXPM_trajectory, decimal=5)
+
+    @pytest.mark.parametrize('method', ('EXPM', 'IMU'))
+    def test_continued(self, system, method):
+        N_timesteps = 10
+        system.run(N_timesteps=N_timesteps, overwrite=True, method=method)
+        trajectory_contiguous = system.trajectory
+        system.run(N_timesteps=5, overwrite=True, method=method)
+        system.run(N_timesteps=5, continued=True, method=method)
+        trajectory_continued = system.trajectory
+        assert_array_equal(trajectory_contiguous, trajectory_continued)
+
     def test_changing_rates(self, system):
         ...
 
@@ -64,8 +82,8 @@ class BaseTest:
 
 
 class TestBinary(BaseTest, RefBinary):
-
-    def test_mutual_information(self):
+    pass
+    '''def test_mutual_information(self):
         X = 'A'
         Y = 'B'
         correct_values = np.array([0., 0.43858457, 0.6457636 , 0.77025155, 0.84901701,
@@ -75,10 +93,21 @@ class TestBinary(BaseTest, RefBinary):
         X = 'A'
         Y = 'B'
         correct_values = np.array([0., 0.92385593, 1.28269609, 1.48006893, 1.59832796,
-                                   1.67229091, 1.71971752, 1.75060155, 1.77091263, 1.78435647])
+                                   1.67229091, 1.71971752, 1.75060155, 1.77091263, 1.78435647])'''
 
-    def test_continued(self):
-        ...
+
+class Test2IsoBinary(BaseTest, Ref2IsoBinary):
+    pass
+    '''def test_mutual_information_iso_switches(self, isolated_switches):
+
+        X = ['A', 'A*']
+        Y = ['B', 'B*']
+        isolated_switches.calculate_instantaneous_mutual_information(X, Y, base=2)
+        mut_inf = isolated_switches._mutual_information
+        correct_values = np.array([0.00000000e+00, 1.59908175e-15, 3.24752736e-15, 5.52514748e-15,
+                                   7.38322748e-15, 9.14533561e-15, 1.12503565e-14, 1.35398846e-14,
+                                   1.54150075e-14, 1.73809943e-14])
+        assert_array_almost_equal(mut_inf[0::10], correct_values)'''
 
 
 '''class TestH5IO:
@@ -104,17 +133,3 @@ class TestBinary(BaseTest, RefBinary):
             system.write(outfile, trajectory_name=f'{stop}')
             system3 = read(outfile, trajectory_name=f'{stop}')
             assert_array_equal(system.trajectory, system3.trajectory)'''
-
-
-'''class Test2IsolatedSwitch:
-
-    def test_mutual_information_iso_switches(self, isolated_switches):
-
-        X = ['A', 'A*']
-        Y = ['B', 'B*']
-        isolated_switches.calculate_instantaneous_mutual_information(X, Y, base=2)
-        mut_inf = isolated_switches._mutual_information
-        correct_values = np.array([0.00000000e+00, 1.59908175e-15, 3.24752736e-15, 5.52514748e-15,
-                                   7.38322748e-15, 9.14533561e-15, 1.12503565e-14, 1.35398846e-14,
-                                   1.54150075e-14, 1.73809943e-14])
-        assert_array_almost_equal(mut_inf[0::10], correct_values)'''

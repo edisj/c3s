@@ -1,9 +1,9 @@
 ---
 reactions:
-  A1 -> A2: [k_A12, 1]
-  A2 -> A1: [k_A21, 1]
-  B1 -> B2: [k_B12, 1]
-  B2 -> B1: [k_B21, 1]
+  A -> B: [k_AB, 1]
+  B -> A: [k_BA, 2]
+  X -> Y: [k_XY, 3]
+  Y -> X: [k_YX, 4]
 constraints:
-  - A1 + A2 = 1
-  - B1 + B2 = 1
+  - A + B = 1
+  - X + Y = 1

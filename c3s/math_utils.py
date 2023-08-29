@@ -3,6 +3,7 @@ from numba import njit
 from .sparse_matrix import sm_times_array
 
 
+@njit
 def binary_search(vector, x, low=0, high=None):
     """"""
     if high is None:

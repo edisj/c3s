@@ -64,7 +64,7 @@ def simplify_sparse_matrix(lines, columns, values):
            ('columns', types.int64[:]),
            ('values', types.float64[:]),
            ('shape', types.int64)])
-class sparse_matrix:
+class SparseMatrix:
     def __init__(self, lins, cols, values, shap=0):
         self.lines = lins
         self.columns = cols
@@ -74,13 +74,13 @@ class sparse_matrix:
             self.shape = 1 + lins.max()  # assume always square
 
     def __add__(self, other):
-        return sparse_matrix(np.concatenate((self.lines, other.lines)),
+        return SparseMatrix(np.concatenate((self.lines, other.lines)),
                              np.concatenate((self.columns, other.columns)),
                              np.concatenate((self.values, other.values)),
                              max(self.shape, other.shape))
 
     def __sub__(self, other):
-        return sparse_matrix(np.concatenate((self.lines, other.lines)),
+        return SparseMatrix(np.concatenate((self.lines, other.lines)),
                              np.concatenate((self.columns, other.columns)),
                              np.concatenate((self.values, -other.values)),
                              max(self.shape, other.shape))
@@ -104,7 +104,7 @@ class sparse_matrix:
     def __mul__(self, other):
         if other.shape != self.shape:
             print('Warning: you are trying to multiply square matrices of different shapes')
-        prod = sparse_matrix(
+        prod = SparseMatrix(
             *multiply_sparse_matrices(self.lines, self.columns, self.values, other.lines, other.columns, other.values),
             self.shape)
         prod.simplify()
