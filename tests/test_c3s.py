@@ -6,7 +6,7 @@ import sys
 import numpy as np
 import math
 from c3s import ChemicalMasterEquation as CME
-from c3s.h5io import read, write
+from c3s.h5io import read_c3s, write_c3s
 from numpy.testing import assert_almost_equal, assert_equal, assert_array_almost_equal,assert_array_equal
 from .reference import RefBinary, Ref2and2Iso, Ref4and2Iso
 
@@ -78,6 +78,9 @@ class BaseTest:
         ...
 
     def test_reset_rates(self, system):
+        ...
+
+    def test_initial_state(self, system):
         ...
 
 

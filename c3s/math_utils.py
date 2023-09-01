@@ -53,5 +53,8 @@ def combine_state_spaces(*subspaces):
 
 
 def vector_to_number(vector, N, base):
-    number = (vector * (base**np.arange(N-1, -1, -1))).sum(axis=1)
+    try:
+        number = (vector * (base**np.arange(N-1, -1, -1))).sum(axis=1)
+    except np.AxisError:
+        number = (vector * (base ** np.arange(N - 1, -1, -1))).sum()
     return number

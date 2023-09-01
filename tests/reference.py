@@ -131,7 +131,7 @@ class RefAllostery:
                  '0 -> S',
                  'P -> 0']
     reactants = [['A'], ['A*'], ['A*', 'S'], ['A*S'], ['A*S'], ['AS'], ['AS'], ['A', 'S'], ['AS'], ['A*S'], ['B','P'], ['BP'], ['0'], ['P']]
-    products = [['A*'], ['A'], ['A*S'], ['A*', 'S'], ['AS'], ['A*S'], ['A', 'S'], ['AS'], ['A','P'], ['A*', 'P'], ['BP'], ['B','P'], 'S', '0']
+    products = [['A*'], ['A'], ['A*S'], ['A*', 'S'], ['AS'], ['A*S'], ['A', 'S'], ['AS'], ['A','P'], ['A*', 'P'], ['BP'], ['B','P'], ['S'], ['0']]
     rate_names = ['k_A*+', 'k_A*-', 'k_S*+', 'k_A*S-', 'k_A*S+', 'k_S+', 'k_cat', 'k_cat*', 'k_BP+', 'k_BP-', 'beta_S', 'gamma_P']
     rates = [2, 1, 4, 1, 1, 2, 1, 2, 1, 10, 2, 1, 1, 1]
     species = ['A', 'A*', 'A*S', 'AS', 'B', 'BP', 'S', 'P']

@@ -4,12 +4,12 @@ import numpy as np
 from pathlib import Path
 
 
-def read(filename, mode='r', trajectory_name=None):
+def read_c3s(filename, mode='r', trajectory_name=None):
     with CMEReader(filename=filename, mode=mode, trajectory_name=trajectory_name) as R:
         return R.system_from_file
 
 
-def write(filename, system, mode='x', trajectory_name=None):
+def write_c3s(filename, system, mode='x', trajectory_name=None):
     """writes simulation data to an hdf5 file"""
 
     fresh_file = not Path(filename).exists()
@@ -170,6 +170,7 @@ class CMEWriter:
 
     def close(self):
         self.file.close()
+    # define __enter__ and __exit__ so this class can be used as a context manager
     def __enter__(self):
         return self
     def __exit__(self, exc_type, exc_val, exc_tb):

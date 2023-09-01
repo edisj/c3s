@@ -56,6 +56,7 @@ class ChemicalMasterEquation(CalculationsMixin):
                              "Use one or the other.")
         self._initial_state = initial_state
         self._initial_populations = initial_populations
+        self._initial_state_index = None
         self._max_populations = max_populations
         self._set_initial_state()
         self._constitutive_states = None
@@ -121,7 +122,7 @@ class ChemicalMasterEquation(CalculationsMixin):
             initial_state = [self._initial_populations[species]
                              if species in self._initial_populations else 0
                              for species in self.species]
-            self._initial_state = initial_state
+            self._initial_state = np.array(initial_state)
 
     def _set_constitutive_states(self):
         with timeit() as set_constitutive_states:
@@ -162,7 +163,9 @@ class ChemicalMasterEquation(CalculationsMixin):
 
         base = self._constitutive_states.max() + 1
         states_as_numbers = vector_to_number(self._constitutive_states, N, base)
-        max_state = states_as_numbers.max()
+        if self._initial_state is not None:
+            initial_state = vector_to_number(self._initial_state, N, base)
+            self._initial_state_index = binary_search(states_as_numbers, initial_state)
         reactions_as_numbers = vector_to_number(self.reaction_network.reaction_matrix, N, base)
         for j, state_j in enumerate(states_as_numbers):
             for k, reaction in enumerate(reactions_as_numbers):
@@ -186,7 +189,6 @@ class ChemicalMasterEquation(CalculationsMixin):
                     G_values.append(propensity)
                     G_values[j] -= propensity
                     k_to_G_map[k].append((i,j))
-
         self._k_to_G_map = k_to_G_map
         generator_matrix = SparseMatrix(np.array(G_lines), np.array(G_cols), np.array(G_values, dtype=np.float64))
         return generator_matrix
@@ -209,7 +211,6 @@ class ChemicalMasterEquation(CalculationsMixin):
             if not continued:
                 raise ValueError("Data from previous run found in `self.trajectory`. "
                                  "To write over this data, set `overwrite=True`")
-
         self._dt = dt
         if method == 'IMU':
             self._run_IMU(N_timesteps, continued)
@@ -229,9 +230,10 @@ class ChemicalMasterEquation(CalculationsMixin):
         if continued:
             trajectory[0] = solve_IMU(p_0=self._trajectory[-1], B=self.B, OmegaT=OmegaT)
         else:
-            # fixing initial probability to be 1 in the initial state
             trajectory[0] = np.zeros(shape=self.M, dtype=np.float64)
-            trajectory[0, 0] = 1.0
+            i = self._initial_state_index if self._initial_state_index is not None else 0
+            # fixing initial probability to be 1 in the initial state
+            trajectory[0,i] = 1.0
 
         with timeit() as t_run:
             for ts in range(N_timesteps - 1):

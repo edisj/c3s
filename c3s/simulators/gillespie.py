@@ -5,7 +5,6 @@ import numpy as np
 from .reactions import ReactionNetwork
 
 
-
 class Gillespie:
     """The Gillespie stochastic simulation algorithm (SSA)."""
 
@@ -25,13 +24,14 @@ class Gillespie:
 
         """
 
-        self.reactions = ReactionNetwork(config)
-        self.species = self.reactions.species
-        self.rates = self.reactions.rates
-        self._rates = self.reactions._rates
+        self.reaction_network = ReactionNetwork(config)
+        self.species = self.reaction_network.species
+        self._rates = self.reaction_network.rates
         self._initial_state = initial_state
         self._initial_populations = initial_populations
         self._max_populations = max_populations
+        self._set_initial_state()
+        self._trajectory = None
         self.empty = empty
 
     def _set_initial_state(self):
@@ -57,21 +57,72 @@ class Gillespie:
                          if species in self._initial_populations else 0
                          for species in self.species]
 
-        self._initial_state = initial_state
+        self._initial_state = np.array(initial_state)
+
+    def run(self, T_max, overwrite=False):
+        """Runs the stochastic simulation algorithm.
+
+        Parameters
+        ----------
+        T_max : int
+        overwrite   : bool, default=False
+
+        """
+
+        if self.trajectory is not None and not overwrite:
+            raise ValueError("Data from previous run found in `self.trajectory`. "
+                             "To write over this data, set the `overwrite=True`")
+
+        N = len(self.species)
+        sequence_of_states = []
+        jump_times = []
+
+        currTime = 0.0
+        currState = self._initial_state
+        while currTime < T_max:
+            propensity_vector = self._get_propensity_vector(currState)
+            nextState = self._get_next_state(currState, propensity_vector)
+            holding_time = self._sample_holding_time(propensity_vector)
+            currTime += holding_time
+            sequence_of_states.append(currState)
+            jump_times.append(currTime)
+            # set current state to the new state and proceed along the journey
+            currState = nextState
+
+        # let's use a named tuple because it's very Pythonic...
+        GillespieTrajectory = namedtuple(
+            'GillespieTrajectory', ['states', 'jump_times'])
+        self._trajectory = GillespieTrajectory(np.array(sequence_of_states),  np.array(jump_times))
+
+    def run_many_iterations(self, N_iterations, T_max):
+        """
+        Parameters
+        ----------
+        N_iterations : int
+        T_max : int
+        """
+
+        trajectories = []
+        for i in range(N_iterations):
+            self.run(T_max=T_max, overwrite=True)
+            trajectories.append(self._trajectory)
+
+        return trajectories
 
     def _get_propensity_vector(self, currState):
         """"""
-        reaction_propensities = [np.prod(currState[indices])*rate[1]
-                                 for indices, rate in zip(self.reactions.propensity_ids, self.reactions._rates)]
+        reaction_propensities = [
+            np.prod(currState[indices])*rate
+            for indices, rate in zip(self.reaction_network.species_in_reaction, self.reaction_network._rates)]
 
-        return np.array(reaction_propensities, dtype=np.int32)
+        return np.array(reaction_propensities)
 
     def _get_next_state(self, currState, propensity_vector):
         """"""
 
         # k selects the index of which reaction was sampled to fire
         k = self._sample_categorical(propensity_vector)
-        reaction = self.reactions.reaction_matrix[k]
+        reaction = self.reaction_network.reaction_matrix[k]
         nextState = currState + reaction
         return nextState
 
@@ -96,7 +147,7 @@ class Gillespie:
         return k
 
     def _sample_holding_time(self, propensity_vector):
-        """"""
+        """uses fundamental theorem of simulation to sample from exponential distribution"""
         lambda_ = np.sum(propensity_vector)
         u = random.uniform(0, 1)
         h = -(1 / lambda_) * math.log(1 - u)
@@ -113,62 +164,6 @@ class Gillespie:
             else:
                 raise KeyError(f'{new_rate_string} is not a valid rate for this system. The new rate'
                                f'must be one of the rates specified in the original config file.')
-
-    def run(self, N_timesteps, run_name=None, overwrite=False):
-        """Runs the stochastic simulation algorithm.
-
-        Parameters
-        ----------
-        N_timesteps : int
-        overwrite   : bool, default=False
-
-        """
-
-        if self.trajectory is not None and not overwrite:
-            raise ValueError("Data from previous run found in `self.trajectory`. "
-                             "To write over this data, set the `overwrite=True`")
-
-        N_species = len(self.species)
-        # let's use a named tuple because it's very Pythonic...
-        Trajectory = namedtuple("Trajectory", ["states", "times"])
-        sequence_of_states = np.empty(shape=(N_timesteps, N_species), dtype=np.int32)
-        times = np.empty(shape=N_timesteps, dtype=np.float64)
-        trajectory = Trajectory(sequence_of_states, times)
-
-        currTime = 0
-        currState = np.array(self._initial_state, dtype=np.int32)
-        for ts in range(N_timesteps):
-            trajectory.states[ts] = currState
-            propensity_vector = self._get_propensity_vector(currState)
-            holding_time = self._sample_holding_time(propensity_vector)
-            nextState = self._get_next_state(currState, propensity_vector)
-            currTime += holding_time
-            trajectory.times[ts] = currTime
-            # set current state to the new state and proceed along the journey
-            currState = nextState
-
-        self._trajectory = trajectory
-
-    def run_many_iterations(self, N_iterations, N_timesteps, run_name=None):
-        """
-
-        Parameters
-        ----------
-        N_iterations : int
-        N_timesteps  : int
-
-        """
-
-        N_species = len(self.species)
-        trajectories = np.empty(shape=(N_iterations, N_timesteps, N_species), dtype=np.int32)
-        times = np.empty(shape=(N_iterations, N_timesteps), dtype=np.float64)
-
-        for i in range(N_iterations):
-            self.run(N_timesteps, run_name=run_name, overwrite=True)
-            trajectories[i] = self.trajectory.states
-            times[i] = self.trajectory.times
-
-        self._trajectory = (trajectories, times)
 
     @property
     def trajectory(self):
