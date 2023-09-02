@@ -73,18 +73,17 @@ class Gillespie:
             raise ValueError("Data from previous run found in `self.trajectory`. "
                              "To write over this data, set the `overwrite=True`")
 
-        N = len(self.species)
-        sequence_of_states = []
-        jump_times = []
-
         currTime = 0.0
         currState = self._initial_state
+        sequence_of_states = [currState]
+        #print(sequence_of_states)
+        jump_times = [currTime]
         while currTime < T_max:
             propensity_vector = self._get_propensity_vector(currState)
             nextState = self._get_next_state(currState, propensity_vector)
             holding_time = self._sample_holding_time(propensity_vector)
             currTime += holding_time
-            sequence_of_states.append(currState)
+            sequence_of_states.append(nextState)
             jump_times.append(currTime)
             # set current state to the new state and proceed along the journey
             currState = nextState
