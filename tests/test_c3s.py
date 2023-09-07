@@ -22,6 +22,10 @@ class BaseTest:
     def system(self):
         return CME(config=self.reactions_file)
 
+    @pytest.fixture()
+    def outfile(self, tmpdir):
+        yield str(tmpdir) + 'c3s_write_test.h5'
+
     def test_species(self, system):
         assert_equal(system.species, self.species)
         assert_equal(len(system.species), self.N)
@@ -74,8 +78,19 @@ class BaseTest:
         trajectory_continued = system.trajectory
         assert_array_equal(trajectory_contiguous, trajectory_continued)
 
-    def test_changing_rates(self, system):
-        ...
+    def test_file_io(self, system, outfile):
+
+        timesteps = [5, 10, 15]
+        for N in timesteps:
+            system.run(N_timesteps=N, overwrite=True, method='IMU')
+            write_c3s(outfile, system, trajectory_name=f'{N}_timesteps')
+            system2 = read_c3s(outfile, trajectory_name=f'{N}_timesteps')
+            assert_array_equal(system.states, system2.states)
+            assert_array_equal(system.G.lines, system2.G.lines)
+            assert_array_equal(system.G.columns, system2.G.columns)
+            assert_array_equal(system.G.values, system2.G.values)
+            assert_equal(system.species, system2.species)
+            assert_array_equal(system.trajectory, system2.trajectory)
 
     def test_reset_rates(self, system):
         ...
@@ -85,7 +100,12 @@ class BaseTest:
 
 
 class TestBinary(BaseTest, RefBinary):
-    pass
+    def test_update_rates(self, system):
+        system.update_rates(self.updated_rates)
+        for reaction, desired_rate in zip(system.reaction_network.reactions, self.updated_rates.values()):
+            assert_equal(reaction.rate, desired_rate)
+            assert_array_equal(system.G.values, self.G_sparse_updated)
+            assert_array_equal(system.G.to_dense(), self.G_dense_updated)
     '''def test_mutual_information(self):
         X = 'A'
         Y = 'B'
@@ -115,31 +135,3 @@ class Test2and2Iso(BaseTest, Ref2and2Iso):
 
 class Test4and2Iso(BaseTest, Ref4and2Iso):
     pass
-
-'''class TestH5IO:
-
-    @pytest.fixture()
-    def system(self):
-        return CME(config=self.reactions_file)
-
-    @pytest.fixture()
-    def outfile(self, tmpdir):
-        yield str(tmpdir) + 'c3s_write_test.h5'
-
-    def test_file_io(self, outfile):
-        system = ChemicalMasterEquation(config='config_files/2+2_isolated.yml',
-                                        initial_populations={'A': 1, 'B': 1})
-        system.run()
-
-        system.write(outfile)
-        system2 = read(outfile)
-        assert_array_equal(system.states, system2.states)
-        assert_array_equal(system.G, system2.G)
-        assert_equal(system.species, system2.species)
-
-        stops = [1, 2, 3]
-        for stop in stops:
-            system.run(0, stop, 0.01, overwrite=True)
-            system.write(outfile, trajectory_name=f'{stop}')
-            system3 = read(outfile, trajectory_name=f'{stop}')
-            assert_array_equal(system.trajectory, system3.trajectory)'''

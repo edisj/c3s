@@ -97,10 +97,16 @@ class ChemicalMasterEquation(CalculationsMixin):
     def M(self) -> int:
         """M is the total number of states in the state space"""
         return len(self._constitutive_states)
+    @M.setter
+    def M(self, value):
+        self.M = value
     @property
     def G(self) -> np.ndarray:
         """G is the MxM transition rate matrix in column format"""
         return self._generator_matrix
+    @G.setter
+    def G(self, value):
+        self._generator_matrix = value
 
     def _set_initial_state(self):
         """sets the `self.initial_state` attribute that specifies the vector of species counts at t=0"""
@@ -219,11 +225,10 @@ class ChemicalMasterEquation(CalculationsMixin):
 
     def _run_IMU(self, N_timesteps, continued):
 
-        if self.B is None:
-            with timeit() as t_B:
-                self._Omega = self._get_Omega()
-                self.B = self._get_B()
-            self.timings['t_B'] = t_B.elapsed
+        with timeit() as t_B:
+            self._Omega = self._get_Omega()
+            self.B = self._get_B()
+        self.timings['t_B'] = t_B.elapsed
 
         OmegaT = self._Omega * self._dt
         trajectory = np.empty(shape=(N_timesteps, self.M), dtype=np.float64)
@@ -278,9 +283,11 @@ class ChemicalMasterEquation(CalculationsMixin):
     def update_rates(self, new_rates):
         """updates `self.rates` and `self.G` with new transition rates"""
         for rate_name, new_rate in new_rates.items():
-            for reaction in self.reaction_network.reactions:
+            for k, reaction in enumerate(self.reaction_network.reactions):
                 if reaction.rate_name == rate_name:
-                    reaction.rate = new_rate
+                    updated_reaction = reaction._replace(rate=new_rate)
+                    self.reaction_network.reactions[k] = updated_reaction
+                    self._rates[k] = new_rate
                     break
             else:
                 raise KeyError(f'{rate_name} is not a valid rate for this system. Valid rates'

@@ -23,7 +23,10 @@ class RefBinary:
     G_dense = [[-1, 1],
                [ 1,-1]]
     G_sparse = [-1, -1, 1, 1]
-    k_to_G_map = {}
+    updated_rates = {'k_AB': 2, 'k_BA': 3}
+    G_dense_updated = [[-3, 2],
+                       [ 3, -2]]
+    G_sparse_updated = [-3, -2, 3, 2]
 
 
 class Ref2and2Iso:
