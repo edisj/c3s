@@ -65,6 +65,7 @@ class ChemicalMasterEquation(CalculationsMixin):
         self._trajectory = None
         self.Q = None
         self.B = None
+        self._Deltas = None
 
         # dictionary to hold timings of various codeblocks for benchmarking
         self.timings: Dict[str, float] = {}
@@ -218,6 +219,7 @@ class ChemicalMasterEquation(CalculationsMixin):
                 raise ValueError("Data from previous run found in `self.trajectory`. "
                                  "To write over this data, set `overwrite=True`")
         self._dt = dt
+        self._run_method = method
         if method == 'IMU':
             self._run_IMU(N_timesteps, continued)
         if method == 'EXPM':
@@ -267,7 +269,7 @@ class ChemicalMasterEquation(CalculationsMixin):
         with timeit() as run_time:
             for ts in range(N_timesteps - 1):
                 trajectory[ts + 1] = Q.dot(trajectory[ts])
-        self.timings['t_run_exp'] = run_time.elapsed
+        self.timings['t_run_EXPM'] = run_time.elapsed
 
         self._trajectory = np.vstack([self._trajectory, trajectory]) if continued else trajectory
 

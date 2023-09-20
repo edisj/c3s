@@ -156,13 +156,24 @@ class CMEWriter:
         traj_group = self._require_group('trajectories')
         if trajectory_name is None:
             trajectory_name = f'trajectory00{len(traj_group) + 1}'
-        self._create_dataset(name=f'trajectories/{trajectory_name}/trajectory',
+        traj_dset = self._create_dataset(name=f'trajectories/{trajectory_name}/trajectory',
                              data=self.system.trajectory)
+        self._set_attr(parent=traj_dset,
+                       name='time',
+                       value=self.system.timings[f't_run_{self.system._run_method}'])
         for reaction in self.system.reaction_network.reactions:
             rate_group = self._create_group(f'trajectories/{trajectory_name}/rates/{reaction.rate_name}')
             self._set_attr(parent=rate_group,
                            name='value',
                            value=reaction.rate)
+
+    def _write_mutual_information(self, trajectory_name, X, Y):
+        traj_group = self._require_group('trajectories')
+        mi_dset = self._create_dataset(name=f'trajectories/{trajectory_name}/mutual_information',
+                                       data=self.system._mutual_information)
+        self._set_attr(parent=mi_dset,
+                       name='X',
+                       value=X)
 
     def _write_species(self):
         ...

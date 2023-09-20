@@ -19,14 +19,20 @@ class CalculationsMixin:
     G: np.ndarray
     trajectory: np.ndarray
 
-    def calculate_instantaneous_mutual_information(self, X, Y, base=2):
+
+
+    def calculate_instantaneous_mutual_information(self, X, Y, Deltas=None, base=2):
 
         try:
             N_timesteps = len(self.trajectory)
         except TypeError:
             raise ValueError('No data found in `self.trajectory`.')
 
-        Deltas = self._fix_species_and_get_Deltas(X, Y)
+        if Deltas is None:
+            with timeit() as t_get_Deltas:
+                Deltas = self._fix_species_and_get_Deltas(X, Y)
+                self._Deltas = Deltas
+            self.timings['t_get_Deltas'] = t_get_Deltas.elapsed
 
         with timeit() as calculation_block:
             mut_inf = np.zeros(shape=N_timesteps, dtype=np.float64)
@@ -54,8 +60,8 @@ class CalculationsMixin:
                         #mi_terms[ts][xy] = this_term
                 mut_inf[ts] = mi_sum
 
-        self.timings[f't_calculate_insant_mi'] = calculation_block.elapsed
-        #self._mutual_information = mut_inf
+        self.timings[f't_calculate_MI'] = calculation_block.elapsed
+        self._mutual_information = mut_inf
 
         return mut_inf#, mi_terms
 
@@ -254,14 +260,15 @@ class CalculationsMixin:
 
         return distribution
 
-    def calculate_average_population(self, species):
+    def calculate_average_population(self, species, point_maps=None):
         """"""
 
         average_population = np.empty(shape=len(self.trajectory), dtype=np.float64)
         if self.trajectory is None:
             raise ValueError('No data found in self.trajectory.')
         P = self.trajectory
-        point_maps = self._get_point_mappings(species)
+        if point_maps is None:
+            point_maps = self._get_point_mappings(species)
         for ts in range(len(P)):
             total = 0
             for point, map in point_maps.items():
