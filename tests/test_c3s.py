@@ -2,18 +2,12 @@
 Unit and regression test for the c3s package.
 """
 import pytest
-import sys
-import numpy as np
-import math
+#import numpy as np
+#import math
 from c3s import ChemicalMasterEquation as CME
-from c3s.h5io import read_c3s, write_c3s
-from numpy.testing import assert_almost_equal, assert_equal, assert_array_almost_equal,assert_array_equal
-from .reference import RefBinary, Ref2and2Iso, Ref4and2Iso
-
-
-def test_c3s_imported():
-    """Sample test, will always pass so long as import statement worked."""
-    assert "c3s" in sys.modules
+from c3s.h5io import build_system_from_file
+from numpy.testing import assert_equal, assert_array_almost_equal,assert_array_equal#, assert_almost_equal
+from .reference_data import RefBinary, Ref2and2Iso, Ref4and2Iso
 
 
 class BaseTest:
@@ -62,35 +56,39 @@ class BaseTest:
 
     def test_IMU_vs_EXPM(self, system):
         N_timesteps = 15
-        system.run(N_timesteps=N_timesteps, overwrite=True, method='IMU')
-        IMU_trajectory = system.trajectory
-        system.run(N_timesteps=N_timesteps, overwrite=True, method='EXPM')
-        EXPM_trajectory = system.trajectory
+        dt = 1
+        system.run(dt=dt, method='IMU', N_timesteps=N_timesteps)
+        IMU_trajectory = system.Trajectory.trajectory
+        system.run(dt=dt, method='EXPM', N_timesteps=N_timesteps, overwrite=True)
+        EXPM_trajectory = system.Trajectory.trajectory
         assert_array_almost_equal(IMU_trajectory, EXPM_trajectory, decimal=5)
 
     @pytest.mark.parametrize('method', ('EXPM', 'IMU'))
     def test_continued(self, system, method):
         N_timesteps = 10
-        system.run(N_timesteps=N_timesteps, overwrite=True, method=method)
-        trajectory_contiguous = system.trajectory
-        system.run(N_timesteps=5, overwrite=True, method=method)
-        system.run(N_timesteps=5, continued=True, method=method)
-        trajectory_continued = system.trajectory
+        dt = 1
+        system.run(dt=dt, method=method, N_timesteps=N_timesteps, overwrite=True)
+        trajectory_contiguous = system.Trajectory.trajectory
+        system.run(dt=dt, method=method, N_timesteps=5, overwrite=True)
+        system.run(dt=dt, method=method, N_timesteps=5, continued=True)
+        trajectory_continued = system.Trajectory.trajectory
         assert_array_equal(trajectory_contiguous, trajectory_continued)
 
     def test_file_io(self, system, outfile):
 
         timesteps = [5, 10, 15]
+        dt = 1
         for N in timesteps:
-            system.run(N_timesteps=N, overwrite=True, method='IMU')
-            write_c3s(outfile, system, trajectory_name=f'{N}_timesteps')
-            system2 = read_c3s(outfile, trajectory_name=f'{N}_timesteps')
+            system.run(N_timesteps=N, dt=dt, overwrite=True, method='IMU')
+            system.write_system(filename=outfile, mode='w')
+            system.write_trajectory(filename=outfile, trajectory_name=f'{N}_timesteps')
+            system2 = build_system_from_file(filename=outfile, trajectory_name=f'{N}_timesteps')
             assert_array_equal(system.states, system2.states)
-            assert_array_equal(system.G.lines, system2.G.lines)
+            assert_array_equal(system.G.rows, system2.G.rows)
             assert_array_equal(system.G.columns, system2.G.columns)
             assert_array_equal(system.G.values, system2.G.values)
             assert_equal(system.species, system2.species)
-            assert_array_equal(system.trajectory, system2.trajectory)
+            assert_array_equal(system.Trajectory.trajectory, system2.Trajectory.trajectory)
 
     def test_reset_rates(self, system):
         ...

@@ -1,7 +1,15 @@
+from c3s.config_files import (BINARY,
+                              ISOLATED_2and2,
+                              ISOLATED_4and2,
+                              ALLOSTERY,
+                              NO_ALLOSTERY)
+
+
+"""TODO: explain this module"""
 
 
 class RefBinary:
-    reactions_file = 'config_files/binary.yml'
+    reactions_file = BINARY
     reactions = ['A -> B',
                  'B -> A']
     reactants = [['A'], ['B']]
@@ -30,7 +38,7 @@ class RefBinary:
 
 
 class Ref2and2Iso:
-    reactions_file = 'config_files/2+2_isolated.yml'
+    reactions_file = ISOLATED_2and2
     reactions = ['A -> B',
                  'B -> A',
                  'X -> Y',
@@ -64,7 +72,7 @@ class Ref2and2Iso:
 
 
 class Ref4and2Iso:
-    reactions_file = 'config_files/4+2_isolated.yml'
+    reactions_file = ISOLATED_4and2
     reactions = ['A -> B',
                  'B -> A',
                  'B -> C',
@@ -118,7 +126,7 @@ class Ref4and2Iso:
 
 
 class RefAllostery:
-    reactions_file = 'config_files/allostery.yml'
+    reactions_file = ALLOSTERY
     reactions = ['A -> A*',
                  'A* -> A',
                  'A* + S -> A*S',

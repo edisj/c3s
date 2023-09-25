@@ -1,7 +1,8 @@
 """A tool for stochastically simulating chemcial systems"""
 
-from .simulators.cme import ChemicalMasterEquation
+from .simulators.chemical_master_equation import ChemicalMasterEquation
 from .simulators.gillespie import Gillespie
+#from .h5io import build_system_from_file
 
 # Handle versioneer
 from ._version import get_versions

@@ -2,7 +2,7 @@ from collections import namedtuple
 import math
 import random
 import numpy as np
-from .reactions import ReactionNetwork
+from .reaction_network import ReactionNetwork
 
 
 class Gillespie:
@@ -12,15 +12,18 @@ class Gillespie:
         """Uses Gillespie's stochastic simulation algorithm to generate a trajectory of a random walker that is
         defined by a molecular population vector.
 
-        Args:
-            config:
-                Path to yaml config file that specifies chemical reactions and kinetic rates
-            initial_state:
-            initial_populations:
-                The initial population a particular species. If a species population is
-                not specified, it's initial population is taken to be 0.
-            max_populations:
-            empty:
+        Parameters
+        ----------
+        config : pathlib.Path or str
+            Path to yaml config file that specifies chemical reactions and kinetic rates
+        initial_state :
+        initial_populations : dict[str: int]
+            dictionary of initial species populations
+            if a species population is not specified, it's initial population is taken to be 0
+        max_populations : dict[str: int]
+            maximum allowable population for some species
+        empty : bool (default=False)
+            flag to leave attributes empty in the case of reading from file
 
         """
 
@@ -65,7 +68,7 @@ class Gillespie:
         Parameters
         ----------
         T_max : int
-        overwrite   : bool, default=False
+        overwrite : bool (default=False)
 
         """
 
@@ -99,6 +102,7 @@ class Gillespie:
         ----------
         N_iterations : int
         T_max : int
+
         """
 
         trajectories = []

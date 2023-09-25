@@ -1,192 +1,276 @@
 import c3s
 import h5py
 import numpy as np
-from pathlib import Path
 from .sparse_matrix import SparseMatrix
 
 
-def read_c3s(filename, mode='r', trajectory_name=None):
-    with CMEReader(filename=filename, mode=mode, trajectory_name=trajectory_name) as R:
-        return R.system_from_file
+"""reads and writes an HDF5 file with the following format:
+
+(name) is an HDF5 group with a mandatory name
+{name} is an HDF5 group with arbitrary name
+[name] is an HDF5 dataset with a mandatory name
++-- attribute is an attribute of a group or dataset with a mandatory name
+< name > is float or int datatype for attribute, group, or dataset
+'name' is string type for attribute
+
+\-- root
+    \-- (original_config)
+        \-- (reactions)
+            \-- {reaction}
+                +-- 'rate_name'
+                +-- < rate_value >
+        \-- (constraints)
+            \-- {constraint}
+    \-- (intitial_populations)
+        \-- {species}
+            +-- < count >
+    \-- < [constitutive_states] > 
+        +-- < code_time >
+    \-- (generator_matrix)
+        +-- < code_time >
+        \-- < [G_rows] >
+        \-- < [G_columns] >
+        \-- < [G_values] >
+    \-- (trajectories)
+        \-- {trajectory}
+            +-- 'method', 'IMU' or 'EXMP'
+            \-- (rates)
+                \-- {rate_name}
+                    +-- < value >
+            \-- < [trajectory] > 
+                +-- < dt >
+                +-- < code_time >
+            \-- (B_matrix), if method=='IMU'
+                +-- < Omega >
+                +-- < code_time >
+                \-- < [B_rows] >
+                \-- < [B_columns] >
+                \-- < [B_values] >
+            \-- < [Q] >, if method=='EXPM"
+                +-- < code_time >
+
+"""
 
 
-class CMEReader:
-    def __init__(self, filename, mode, trajectory_name=None):
-        self.filename = filename
-        self.mode = mode
-        self.trajectory_name = trajectory_name
-        self.file = self._open_file()
-        config = self._get_config()
-        initial_populations, max_populations, self.G_lines, self.G_columns, self.G_values = self._get_system_info()
-        self.system_from_file = c3s.ChemicalMasterEquation(
-            config=config,
-            initial_populations=initial_populations,
-            max_populations=max_populations,
-            empty=True)
-
-        self._fill_system_from_file()
-
-    def _open_file(self):
-        return h5py.File(self.filename, self.mode, track_order=True)
-
-    def _fill_system_from_file(self):
-        self.system_from_file._constitutive_states = self._get_states()
-        self.system_from_file._generator_matrix = SparseMatrix(self.G_lines, self.G_columns, self.G_values)
-        if self.trajectory_name:
-            self.system_from_file.trajectory = self._get_trajectory()
-
-    def _get_config(self):
-        config_dictionary = {'reactions': {}, 'constraints': {}}
-        for reaction_string, rate_group in self.file['original_config/reactions'].items():
-            rate_string = list(rate_group.keys())[0]
-            rate_value = self._get_attr(rate_group[rate_string], name='value')
-            config_dictionary['reactions'][reaction_string] = [rate_string, rate_value]
-        config_dictionary['constraints'] = list(self.file['original_config/constraints'].keys())
-        return config_dictionary
-
-    def _get_system_info(self):
-        if 'initial_popultaions' in self.file:
-            initial_populations = {key : self.file[f'initial_populations/{key}'][()]
-                                   for key in self.file['initial_populations'].keys()}
-        else:
-            initial_populations = None
-        if 'max_populations' in self.file:
-            max_populations = {key : self.file[f'max_populations/{key}'][()]
-                               for key in self.file['max_populations'].keys()}
-        else:
-            max_populations = None
-        G_lines = self.file['generator_matrix/G_rows'][()]
-        G_columns = self.file['generator_matrix/G_columns'][()]
-        G_values = self.file['generator_matrix/G_values'][()]
-
-        return initial_populations, max_populations, G_lines, G_columns, G_values
-
-    def _get_attr(self, parent, name):
-        return parent.attrs[name]
-
-    def _get_states(self):
-        return self.file['constitutive_states'][()]
-
-    def _get_trajectory(self):
-
-        trajectory_group = self.file[f'trajectories/{self.trajectory_name}']
-        rate_group = trajectory_group['rates']
-        rates_from_trajectory = {key: rate_group[key].attrs['value'] for key in rate_group}
-
-        return trajectory_group['trajectory'][()]
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.file.close()
-        return False
-
-
-def write_c3s(filename, system, mode='r+', trajectory_name=None):
-    """writes simulation data to an hdf5 file"""
-
-    if system.trajectory is None:
-        raise ValueError("no data in `system.trajectory`")
-    if not Path(filename).exists():
-        with CMEWriter(filename, system, mode='x') as W:
-            W._write_system_info()
-    with CMEWriter(filename, system, mode=mode) as W:
-        W._write_trajectory(trajectory_name=trajectory_name)
+def build_system_from_file(filename, mode='r', trajectory_name=None):
+    with CMEReader(filename=filename, mode=mode, trajectory_name=trajectory_name) as Reader:
+        return Reader.generate_system_from_file()
 
 
 class CMEWriter:
     """rough draft of a more robust file writer"""
 
-    def __init__(self, filename, system, mode='x', **kwargs):
+    def __init__(self, filename, mode, system, driver=None, comm=None):
+        """
+        Parameters
+        ----------
+        filename : str
+            filename for data file
+        mode : str
+            mode of file access
+        system : ChemicalMasterEquation
+            ...
+        driver : str (default=None)
+            file driver used to open hdf5 file
+        comm : MPI.Comm (default=None)
+            MPI communicator used to open hdf5 file,
+            must be passed with `'mpio'` file driver
+
+        """
+
         self.system = system
         self.filename = filename
         self.mode = mode
-        self.file = self._open_file()
+        self._driver = driver
+        self._comm = comm
+        # open file at root
+        self._file_root = h5py.File(name=self.filename,
+                                    mode=self.mode,
+                                    driver=self._driver,
+                                    #comm=self._comm,
+                                    track_order=True)
 
-    def _open_file(self):
-        return h5py.File(self.filename, self.mode, track_order=True)
-    def _create_group(self, name):
-        return self.file.create_group(name, track_order=True)
-    def _require_group(self, name):
-        return self.file.require_group(name)
-    def _create_dataset(self, name, data):
-        return self.file.create_dataset(name, data=data, track_order=True)
-    def _set_attr(self, parent, name, value):
-        parent.attrs[name] = value
-
-    def _dump_config(self):
+    def _write_system(self):
         self._write_original_config()
-        self._write_species()
-        self._write_reaction_matrix()
-        self._write_propensities()
+        self._write_states()
+        self._write_generator_matrix()
+        if self.system._initial_populations:
+            self._write_initial_populations()
 
     def _write_original_config(self):
-        reaction_strings = [reaction.reaction for reaction in self.system.reaction_network.reactions]
-        rate_names = [reaction.rate_name for reaction in self.system.reaction_network.reactions]
-        rate_values = [reaction.rate for reaction in self.system.reaction_network.reactions]
-        for rxn, rate_name, rate_value in zip(reaction_strings, rate_names, rate_values):
-            rate_group = self._create_group(f'original_config/reactions/{rxn}/{rate_name}')
-            self._set_attr(rate_group, name='value', value=rate_value)
+        """"""
+        config_group = self._file_root.create_group('original_config', track_order=True)
+        for reaction in self.system.reaction_network.reactions:
+            reaction_group = config_group.create_group(f'reactions/{reaction.reaction}', track_order=True)
+            reaction_group.attrs['rate_name'] = reaction.rate_name
+            reaction_group.attrs['rate_value'] = reaction.rate
+
         constraint_strings = [constraint.constraint for constraint in self.system.reaction_network.constraints]
         for constraint in constraint_strings:
-            constraint_group = self._create_group(f'original_config/constraints/{constraint}')
+            constraint_group = config_group.create_group(f'constraints/{constraint}', track_order=True)
 
-    def _write_system_info(self):
-        # basic reaction info
-        self._dump_config()
-        self._create_dataset(name='constitutive_states',
-                             data=self.system.states)
-        self._create_dataset(name='generator_matrix/G_rows',
-                             data=self.system.G.lines)
-        self._create_dataset(name='generator_matrix/G_columns',
-                             data=self.system.G.columns)
-        self._create_dataset(name='generator_matrix/G_values',
-                             data=self.system.G.values)
-        if self.system._initial_populations:
-            for species, count in self.system._initial_populations.items():
-                self._create_dataset(name=f'initial_populations/{species}',
-                                     data=np.array(count))
-        if self.system._max_populations:
-            for species, count in self.system._max_populations.items():
-                self._create_dataset(name=f'max_populations/{species}',
-                                     data=np.array(count))
+    def _write_states(self):
+        """"""
+        states_dataset = self._file_root.create_dataset(name='constitutive_states', data=self.system.states)
+        states_dataset.attrs['code_time'] = self.system.timings['t_build_state_space']
+
+    def _write_generator_matrix(self):
+        """"""
+        G_group = self._file_root.create_group('generator_matrix', track_order=True)
+        G_group.create_dataset(name='G_rows', data=self.system.G.rows)
+        G_group.create_dataset(name='G_columns', data=self.system.G.columns)
+        G_group.create_dataset(name='G_values', data=self.system.G.values)
+        G_group.attrs['code_time'] = self.system.timings['t_build_generator_matrix']
+
+    def _write_initial_populations(self):
+        """"""
+        initial_pop_group = self._file_root.create_group(name='initial_populations', track_order=True)
+        for species, count in self.system._initial_populations.items():
+            species_group = initial_pop_group.create_group(name=species)
+            species_group.attrs['count'] = count
 
     def _write_trajectory(self, trajectory_name):
-        traj_group = self._require_group('trajectories')
+        """"""
+        Trajectory = self.system.Trajectory
+
+        if 'trajectories' not in self._file_root:
+            trajectories_group = self._file_root.create_group('trajectories', track_order=True)
+        else:
+            trajectories_group = self._file_root.require_group('trajectories')
         if trajectory_name is None:
-            trajectory_name = f'trajectory00{len(traj_group) + 1}'
-        traj_dset = self._create_dataset(name=f'trajectories/{trajectory_name}/trajectory',
-                             data=self.system.trajectory)
-        self._set_attr(parent=traj_dset,
-                       name='time',
-                       value=self.system.timings[f't_run_{self.system._run_method}'])
-        for reaction in self.system.reaction_network.reactions:
-            rate_group = self._create_group(f'trajectories/{trajectory_name}/rates/{reaction.rate_name}')
-            self._set_attr(parent=rate_group,
-                           name='value',
-                           value=reaction.rate)
+            trajectory_name = f'trajectory00{len(trajectories_group) + 1}'
+
+        trajectory_group = trajectories_group.create_group(name=trajectory_name, track_order=True)
+        trajectory_group.attrs['method'] = Trajectory.method
+
+        for rate_name, rate_value in zip(self.system.reaction_network._rate_names, self.system._rates):
+            rate_group = trajectory_group.create_group(f'rates/{rate_name}', track_order=True)
+            rate_group.attrs['value'] = rate_value
+
+        trajectory_dataset = trajectory_group.create_dataset(name='trajectory', data=Trajectory.trajectory)
+        trajectory_dataset.attrs['code_time'] = self.system.timings[f't_run_{Trajectory.method}']
+        trajectory_dataset.attrs['dt'] = Trajectory.dt
+
+        if Trajectory.method == 'IMU':
+            B_group = trajectory_group.create_group('B_matrix', track_order=True)
+            B_group.create_dataset(name='B_rows', data=Trajectory.B.rows)
+            B_group.create_dataset(name='B_columns', data=Trajectory.B.columns)
+            B_group.create_dataset(name='B_values', data=Trajectory.B.values)
+            B_group.attrs['Omega'] = Trajectory.Omega
+            B_group.attrs['code_time'] = self.system.timings['t_build_B_matrix']
+        elif Trajectory.method == 'EXPM':
+            Q_dataset = trajectory_group.create_dataset(name='Q', data=Trajectory.Q)
+            Q_dataset.attrs['code_time'] = self.system.timings['t_matrix_exponential']
 
     def _write_mutual_information(self, trajectory_name, X, Y):
-        traj_group = self._require_group('trajectories')
-        mi_dset = self._create_dataset(name=f'trajectories/{trajectory_name}/mutual_information',
-                                       data=self.system._mutual_information)
-        self._set_attr(parent=mi_dset,
-                       name='X',
-                       value=X)
-
-    def _write_species(self):
-        ...
-    def _write_reaction_matrix(self):
-        ...
-    def _write_propensities(self):
         ...
 
     def close(self):
-        self.file.close()
+        self._file_root.close()
+
     # define __enter__ and __exit__ so this class can be used as a context manager
     def __enter__(self):
         return self
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
+        return False
+
+
+class CMEReader:
+    """rough draft of a more robust file reader"""
+
+    def __init__(self, filename, mode, driver=None, comm=None, trajectory_name=None):
+        """
+        Parameters
+        ----------
+        filename : str
+            filename for data file
+        mode : str
+            mode of file access
+        driver : str (default=None)
+            file driver used to open HDF5 file
+        comm : MPI.Comm (default=None)
+            MPI communicator used to open hdf5 file, must be passed with `'mpio'` file driver
+        trajectory_name : str (default=None)
+            ...
+
+        """
+
+        self.filename = filename
+        self.mode = mode
+        self._driver = driver
+        self._comm = comm
+        self.trajectory_name = trajectory_name
+        # open file at root
+        self._file_root = h5py.File(name=self.filename,
+                                    mode=self.mode,
+                                    driver=self._driver)
+                                    #comm=self._comm)
+
+    def generate_system_from_file(self):
+        # first get reaction network info
+        config_dictionary = self._read_original_config()
+        if 'initial_popultaions' in self._file_root:
+            initial_populations = {species: species.attrs['count'] for species in self._file_root['initial_populations']}
+        else:
+            initial_populations = None
+        # start with an empty system
+        system = c3s.ChemicalMasterEquation(config=config_dictionary,
+                                            initial_populations=initial_populations,
+                                            empty=True)
+        # fill in attribute data from file
+        system._constitutive_states = self._read_states()
+        system._generator_matrix = self._read_G()
+        if self.trajectory_name is not None:
+            system._Trajectory = self._read_trajectory(self.trajectory_name)
+
+        return system
+
+    def _read_original_config(self):
+        config_dictionary = {'reactions': {}, 'constraints': {}}
+        config_group = self._file_root['original_config']
+        for key in config_group['reactions'].keys():
+            rate_name = config_group[f'reactions/{key}'].attrs['rate_name']
+            rate_value = config_group[f'reactions/{key}'].attrs['rate_value']
+            config_dictionary['reactions'][key] = [rate_name, rate_value]
+        config_dictionary['constraints'] = list(config_group['constraints'].keys())
+        return config_dictionary
+
+    def _read_states(self):
+        return self._file_root['constitutive_states'][()]
+
+    def _read_G(self):
+        G_rows = self._file_root['generator_matrix/G_rows'][()]
+        G_columns = self._file_root['generator_matrix/G_columns'][()]
+        G_values = self._file_root['generator_matrix/G_values'][()]
+        return SparseMatrix(G_rows, G_columns, G_values)
+
+    def _read_trajectory(self, trajectory_name):
+
+        trajectory_group = self._file_root[f'trajectories/{self.trajectory_name}']
+
+        trajectory = trajectory_group['trajectory'][()]
+        method = trajectory_group.attrs['method']
+        dt = trajectory_group['trajectory'].attrs['dt']
+        rates = np.array(
+            [trajectory_group[f'rates/{rate_name}'].attrs['value'] for rate_name in trajectory_group['rates']])
+
+        if method == 'IMU':
+            B_group = trajectory_group['B_matrix']
+            Omega = B_group.attrs['Omega']
+            B = SparseMatrix(B_group['B_rows'][()], B_group['B_columns'][()], B_group['B_values'][()])
+            Q = None
+        else:
+            assert(method=='EXPM')
+            Q = trajectory_group['Q'][()]
+            Omega = None
+            B = None
+
+        return c3s.ChemicalMasterEquation.CMETrajectory(
+            trajectory=trajectory, method=method, dt=dt, rates=rates,Omega=Omega, B=B, Q=Q)
+
+    def __enter__(self):
+        return self
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._file_root.close()
         return False

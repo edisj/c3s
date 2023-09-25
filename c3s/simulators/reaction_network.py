@@ -9,6 +9,9 @@ import numpy as np
 class ReactionNetwork:
     """meant to be used as a component class via composition for the simulator classes"""
 
+    Reaction = namedtuple("Reaction", ['k', 'reaction', 'reactants', 'products', 'rate_name', 'rate'])
+    Constraint = namedtuple("Constraint", ['constraint', 'species_involved', 'separator', 'value'])
+
     def __init__(self, config):
         """reads the config file and sets various important attributes"""
 
@@ -22,6 +25,7 @@ class ReactionNetwork:
         self._reactions = self._parse_reactions()
         self._constraints = self._parse_constraints()
         self._rates = [reaction.rate for reaction in self._reactions]
+        self._rate_names = [reaction.rate_name for reaction in self._reactions]
         self._species = self._set_species_vector()
         self._reaction_matrix = self._set_reaction_matrix()
         self._species_in_reaction = self._set_species_in_reaction()
@@ -52,7 +56,6 @@ class ReactionNetwork:
 
     def _parse_reactions(self):
         reactions = []
-        Reaction = namedtuple("Reaction", ['k', 'reaction', 'reactants', 'products', 'rate_name', 'rate'])
         # deepcopy because update_rates() would otherwise change rates in self._original_config
         config_data = deepcopy(self._original_config)
         for k, (reaction, rate_list) in enumerate(config_data['reactions'].items()):
@@ -61,18 +64,13 @@ class ReactionNetwork:
             products = reaction.replace(' ', '').split('->')[1].split('+')
             rate_name = rate_list[0]
             rate = rate_list[1]
-            reactions.append(
-                Reaction(k=k,
-                         reaction=reaction_string,
-                         reactants=reactants,
-                         products=products,
-                         rate_name=rate_name,
-                         rate=rate))
+            #positive_term =
+            reactions.append(self.Reaction(
+                k=k, reaction=reaction_string, reactants=reactants, products=products, rate_name=rate_name, rate=rate))
         return reactions
 
     def _parse_constraints(self):
         constraints = []
-        Constraint = namedtuple("Constraint", ['constraint', 'species_involved', 'separator', 'value'])
         config_data = deepcopy(self._original_config)
         for constraint in config_data['constraints']:
             if '<' in constraint:
@@ -83,11 +81,8 @@ class ReactionNetwork:
                 separator = '='
             species_involved = sorted(constraint.split(separator)[0].replace(' ', '').split('+'))
             value = int(constraint.split(separator)[1].replace(' ', ''))
-            constraints.append(
-                Constraint(constraint=constraint,
-                           species_involved=species_involved,
-                           separator=separator,
-                           value=value))
+            constraints.append(self.Constraint(
+                constraint=constraint, species_involved=species_involved, separator=separator, value=value))
         return constraints
 
     def _set_species_vector(self):
@@ -99,8 +94,8 @@ class ReactionNetwork:
         # remove duplicates and sort
         species_from_reactions = sorted(list(set(species_from_reactions)))
         species_from_constraints = []
-        for constraint in self._constraints:
-            species_from_constraints += constraint.species_involved
+        for Constraint in self._constraints:
+            species_from_constraints += Constraint.species_involved
         # this should be true or I can't build state space later
         assert(sorted(species_from_constraints) == species_from_reactions)
         return species_from_constraints
