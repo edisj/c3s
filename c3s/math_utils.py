@@ -74,3 +74,9 @@ def IMU_timestep(p_0, B, OmegaT):
     # guarantees sum_ sums to 1
     sum_ += p_0 * (1.0 - poisson_factor_cumulative)
     return sum_
+
+
+@njit
+def EXPM_timestep(p_0, Q):
+    """np.dot() with scipy.sparse.linalg.expm()"""
+    return Q.dot(p_0)

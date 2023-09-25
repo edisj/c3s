@@ -48,6 +48,12 @@ from .sparse_matrix import SparseMatrix
                 \-- < [B_values] >
             \-- < [Q] >, if method=='EXPM"
                 +-- < code_time >
+            \-- (calculations)
+                \-- [mutual_information]
+                    +-- X
+                    +-- Y
+                    +-- base
+                \-- {avg_copy_number_species}
 
 """
 
@@ -162,8 +168,38 @@ class CMEWriter:
             Q_dataset = trajectory_group.create_dataset(name='Q', data=Trajectory.Q)
             Q_dataset.attrs['code_time'] = self.system.timings['t_matrix_exponential']
 
-    def _write_mutual_information(self, trajectory_name, X, Y):
-        ...
+    def _write_mutual_information(self, trajectory_name, data, mi_base, X, Y):
+        """"""
+        trajectory_group = self._file_root.require_group(f'trajectories/{trajectory_name}')
+        if 'calculations' not in trajectory_group:
+            calculations_group = trajectory_group.create_group('calculations', track_order=True)
+        else:
+            calculations_group = trajectory_group.require_group('calculations')
+
+        mi_dataset = calculations_group.create_dataset(name='mutual_information', data=data)
+        mi_dataset.attrs['X'] = str(X)
+        mi_dataset.attrs['Y'] = str(Y)
+        mi_dataset.attrs['base'] = mi_base
+        mi_dataset.attrs['code_time'] = self.system.timings['t_calculate_mi']
+
+    def _write_avg_copy_number(self, trajectory_name, species, avg_copy_number):
+        trajectory_group = self._file_root.require_group(f'trajectories/{trajectory_name}')
+        if 'calculations' not in trajectory_group:
+            calculations_group = trajectory_group.create_group('calculations', track_order=True)
+        else:
+            calculations_group = trajectory_group.require_group('calculations')
+        calculations_group.create_dataset(name=f'<c_{species}>', data=avg_copy_number)
+
+    def _write_marginalized_trajectory(self, trajectory_name, species_subset, marginalized_trajectory):
+        trajectory_group = self._file_root.require_group(f'trajectories/{trajectory_name}')
+        if 'calculations' not in trajectory_group:
+            calculations_group = trajectory_group.create_group('calculations', track_order=True)
+        else:
+            calculations_group = trajectory_group.require_group('calculations')
+
+        marginalized_trajectory_group = calculations_group.create_group(name=f'{species_subset}_trajectory', track_order=True)
+        for state, marginalized_trajectory in marginalized_trajectory.items():
+            marginalized_trajectory_group.create_dataset(name=str(state), data=marginalized_trajectory)
 
     def close(self):
         self._file_root.close()

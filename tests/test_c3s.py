@@ -64,13 +64,13 @@ class BaseTest:
         assert_array_almost_equal(IMU_trajectory, EXPM_trajectory, decimal=5)
 
     @pytest.mark.parametrize('method', ('EXPM', 'IMU'))
-    def test_continued(self, system, method):
+    def test_is_continued(self, system, method):
         N_timesteps = 10
         dt = 1
         system.run(dt=dt, method=method, N_timesteps=N_timesteps, overwrite=True)
         trajectory_contiguous = system.Trajectory.trajectory
         system.run(dt=dt, method=method, N_timesteps=5, overwrite=True)
-        system.run(dt=dt, method=method, N_timesteps=5, continued=True)
+        system.run(dt=dt, method=method, N_timesteps=5, is_continued=True)
         trajectory_continued = system.Trajectory.trajectory
         assert_array_equal(trajectory_contiguous, trajectory_continued)
 

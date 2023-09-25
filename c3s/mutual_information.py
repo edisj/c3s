@@ -3,7 +3,7 @@ import numpy as np
 from .marginalization import get_PointMappings
 
 
-def mutual_information(system, X, Y, base):
+def calculate_mutual_information(system, X, Y, base=2):
 
     N_timesteps = len(system.Trajectory.trajectory)
     PointMappings = get_PointMappings(system=system, X=X, Y=Y)
@@ -12,16 +12,16 @@ def mutual_information(system, X, Y, base):
     for ts in range(N_timesteps):
         mi_sum = 0
         P_t = system.Trajectory.trajectory[ts]
-        for x, ids_x in PointMappings.X.items():
-            for y, ids_y in PointMappings.Y.items():
-                ids_xy = PointMappings.XY[x+y]
-                p_xy = np.sum(P_t[ids_xy])
+        for x, x_ids in PointMappings.X.items():
+            for y, y_ids in PointMappings.Y.items():
+                xy_ids = PointMappings.XY[x+y]
+                p_xy = np.sum(P_t[xy_ids])
                 if p_xy == 0:
                     # add zero to the sum if p_xy is 0
                     # need to do this because 0*np.log(0) returns an error
                     continue
-                p_x = np.sum(P_t[ids_x])
-                p_y = np.sum(P_t[ids_y])
+                p_x = np.sum(P_t[x_ids])
+                p_y = np.sum(P_t[y_ids])
                 mi_sum += p_xy * math.log(p_xy / (p_x * p_y), base)
         mutual_information[ts] = mi_sum
 

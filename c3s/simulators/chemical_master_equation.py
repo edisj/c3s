@@ -10,12 +10,13 @@ from ..utils import timeit
 from ..sparse_matrix import SparseMatrix
 from ..h5io import CMEWriter
 from ..marginalization import marginalize_trajectory, average_copy_number
-from ..mutual_information import mutual_information
+from ..mutual_information import calculate_mutual_information
 from ..math_utils import (generate_subspace,
                           combine_state_spaces,
                           vector_to_number,
                           binary_search,
-                          IMU_timestep)
+                          IMU_timestep,
+                          EXPM_timestep)
 
 
 class ChemicalMasterEquation:
@@ -220,22 +221,22 @@ class ChemicalMasterEquation:
         original_rates = {rate[0]: rate[1] for rate in rates_from_config}
         self.update_rates(original_rates)
 
-    def run(self, dt, method, N_timesteps=None, to_steady_state=False, overwrite=False, continued=False):
+    def run(self, method, dt, N_timesteps=None, to_steady_state=False, overwrite=False, is_continued=False):
         """runs the chemical master equation simulation
 
         Parameters
         ----------
-        dt : float
-            value of timestep that multiplies into generator matrix
         method : 'IMU' or 'EXPM'
             whether to call `self._run_IMU()` or `self._run_EXPM()`
+        dt : float
+            value of timestep that multiplies into generator matrix
         N_timesteps : int (default=None)
             number of simulation timesteps, must be specified if `to_steady_state=False`
         to_steady_state : bool (default=False)
             set to `True` to run simulation until steady state condition has been achieved
         overwrite : bool (default=False)
             set to `True` to rerun a simulation from scratch and overwite data in `self.Trajectory`
-        continued : bool (default=False)
+        is_continued : bool (default=False)
             set to `True` to run continued simulation and concatenate results with `self.Trajectory`
 
         """
@@ -245,75 +246,98 @@ class ChemicalMasterEquation:
             raise ValueError("`N_timesteps` must be specified if `to_steady_state=False`.")
         if (self._Trajectory is not None) and (not overwrite):
             # ok if we are concatenating new data
-            if not continued:
-                raise AttributeError(
-                    "Data already found in `self.Trajectory`. To overwrite this data, set `overwrite=True`.")
+            if not is_continued:
+                raise AttributeError("Data already found in `self.Trajectory`. To overwrite this data, set `overwrite=True`.")
 
-        if method == 'IMU':
-            self._run_IMU(N_timesteps, dt, continued)
-        if method == 'EXPM':
-            self._run_EXPM(N_timesteps, dt, continued)
+        Omega, OmegaT, B = self._get_Omega_and_B(method, dt)
+        Q = self._get_Q(method, dt)
+        f = {'IMU': IMU_timestep, 'EXPM': EXPM_timestep}[method]
+        f_args = {'IMU': [B, OmegaT], 'EXPM': [Q]}[method]
+        kwargs = {'method': method, 'dt':dt, 'N_timesteps': N_timesteps,
+                  'f': f, 'f_args': f_args, 'Omega':Omega, 'B':B, 'Q':Q, 'is_continued': is_continued}
 
-    def _run_IMU(self, N_timesteps, dt, continued, scale_factor=1.1):
-        """inverse marginalized uniformization method"""
+        if to_steady_state:
+            self._run_to_steady_state(**kwargs)
+        else:
+            self._run_to_N_timesteps(**kwargs)
 
+    def _get_Omega_and_B(self, method, dt):
+        if method != 'IMU':
+            return None, None, None
         with timeit() as t_build_B_matrix:
-            Omega = abs(max(self.G.values, key=abs)) * scale_factor
-            OmegaT = Omega * dt
+            Omega = self._calculate_Omega()
+            OmegaT = Omega*dt
             B = self._build_B_matrix(Omega)
         self.timings['t_build_B_matrix'] = t_build_B_matrix.elapsed
+        return Omega, OmegaT, B
 
-        trajectory = np.empty(shape=(N_timesteps, self.M), dtype=np.float64)
-        if continued:
-            trajectory[0] = IMU_timestep(p_0=self._Trajectory.trajectory[-1], B=B, OmegaT=OmegaT)
-        else:
-            trajectory[0] = np.zeros(shape=self.M, dtype=np.float64)
-            # fixing initial probability to be 1 in the initial state
-            i = self._initial_state_index
-            trajectory[0,i] = 1.0
-
-        with timeit() as t_run_IMU:
-            for ts in range(N_timesteps - 1):
-                trajectory[ts + 1] = IMU_timestep(p_0=trajectory[ts], B=B, OmegaT=OmegaT)
-        self.timings['t_run_IMU'] = t_run_IMU.elapsed
-
-        if continued:
-            trajectory = np.vstack([self._Trajectory.trajectory, trajectory])
-
-        self._Trajectory = self.CMETrajectory(
-            trajectory=trajectory, method='IMU', dt=dt, rates=self._rates, Omega=Omega, B=B, Q=None)
+    def _calculate_Omega(self, scale_factor=1.1):
+        return abs(max(self.G.values, key=abs)) * scale_factor
 
     def _build_B_matrix(self, Omega):
         B_values = self.G.values / Omega
         B_values[:self.M] = B_values[:self.M] + 1
         return SparseMatrix(self.G.rows, self.G.columns, B_values)
 
-    def _run_EXPM(self, N_timesteps, dt, continued):
-        """scipy sparse matrix exponentiation method"""
-
+    def _get_Q(self, method, dt):
+        if method != 'EXPM':
+            return None
         with timeit() as t_matrix_exponential:
             Q = expm(self._generator_matrix.to_dense() * dt)
         self.timings['t_matrix_exponential'] = t_matrix_exponential.elapsed
+        return Q
 
-        trajectory = np.empty(shape=(N_timesteps, self.M), dtype=np.float64)
+    def _run_to_steady_state(self, method, dt, f, f_args, Omega, B, Q, is_continued, diff_threshold=1e-8, **kwargs):
+        trajectory = self._init_trajectory_list(is_continued)
+        with timeit() as t_run:
+            ts = 0
+            while True:
+                trajectory.append( f(trajectory[ts], *f_args) )
+                P_difference = trajectory[ts + 1] - trajectory[ts]
+                if P_difference.max() < diff_threshold:
+                    break
+                ts += 1
+        self.timings[f't_run_{method}'] = t_run.elapsed
+
+        trajectory = np.vstack((self.Trajectory.trajectory, np.array(trajectory))) if is_continued else np.array(trajectory)
+        self._Trajectory = self.CMETrajectory(
+            trajectory=trajectory, method=method, dt=dt, rates=self._rates, Omega=Omega, B=B, Q=None)
+
+    def _init_trajectory_list(self, continued):
         if continued:
-            trajectory[0] = Q.dot(self._Trajectory.trajectory[-1])
+            p_0 = self.Trajectory.trajectory[-1]
         else:
-            trajectory[0] = np.zeros(shape=self.M, dtype=np.float64)
-            # fixing initial probability to be 1 in the initial state
-            i = self._initial_state_index
-            trajectory[0,i] = 1.0
+            p_0 = np.zeros(shape=self.M, dtype=np.float64)
+            p_0[self._initial_state_index] = 1.0
+        return [p_0]
 
-        with timeit() as t_run_EXPM:
-            for ts in range(N_timesteps - 1):
-                trajectory[ts + 1] = Q.dot(trajectory[ts])
-        self.timings['t_run_EXPM'] = t_run_EXPM.elapsed
+    def _run_to_N_timesteps(self, N_timesteps, method, dt, f, f_args, Omega, B, Q, is_continued, **kwargs):
+        """inverse marginalized uniformization method"""
 
-        if continued:
-            trajectory = np.vstack([self._Trajectory.trajectory, trajectory])
+        trajectory, start, stop = self._init_trajectory_buffer(N_timesteps, is_continued)
+        with timeit() as t_run:
+            for ts in range(start, stop):
+                trajectory[ts + 1] = f(trajectory[ts], *f_args)
+        self.timings[f't_run_{method}'] = t_run.elapsed
 
         self._Trajectory = self.CMETrajectory(
-            trajectory=trajectory, method='EXPM', dt=dt, rates=self._rates, Omega=None, B=None, Q=Q)
+            trajectory=trajectory, method=method, dt=dt, rates=self._rates, Omega=Omega, B=B, Q=None)
+
+    def _init_trajectory_buffer(self, N_timesteps, continued):
+        if continued:
+            start = len(self.Trajectory.trajectory) - 1
+            stop = start + N_timesteps
+            trajectory = np.vstack(
+                [self._Trajectory.trajectory, np.empty(shape=(N_timesteps, self.M), dtype=np.float64)])
+        else:
+            start = 0
+            stop = N_timesteps - 1
+            trajectory = np.empty(shape=(N_timesteps, self.M), dtype=np.float64)
+            trajectory[0] = np.zeros(shape=self.M, dtype=np.float64)
+            # fixing initial probability to be 1 in the initial state
+            trajectory[0, self._initial_state_index] = 1.0
+
+        return trajectory, start, stop
 
     def write_system(self, filename, mode='x'):
         """writes system data to HDF5 file"""
@@ -322,30 +346,39 @@ class ChemicalMasterEquation:
 
     def write_trajectory(self, filename, mode='r+', trajectory_name=None):
         """write trajectory data to HDF5 file"""
-
-        self._check_if_Trajectory_exists()
+        if self._Trajectory is None:
+            raise AttributeError('no data in `system.Trajectory`.')
         # if the file does not exist yet
         if not Path(filename).is_file():
             self.write_system(filename=filename)
-
         with CMEWriter(filename=filename, mode=mode, system=self) as Writer:
             Writer._write_trajectory(trajectory_name=trajectory_name)
 
-    def write_calculation(self, filename, mode='r+'):
-        ...
+    def write_mutual_information(self, filename, trajectory_name, data, base, X, Y, mode='r+'):
+        """"""
+        X = [X] if isinstance(X, str) else X
+        Y = [Y] if isinstance(Y, str) else Y
+        with CMEWriter(filename=filename, mode=mode, system=self) as Writer:
+            Writer._write_mutual_information(trajectory_name, data, base, X, Y)
+
+    def write_avg_copy_number(self, filename, trajectory_name, species, avg_copy_number, mode='r+'):
+        with CMEWriter(filename=filename, mode=mode, system=self) as Writer:
+            Writer._write_avg_copy_number(trajectory_name, species, avg_copy_number)
+
+    def write_marginalized_trajectory(self, filename, trajectory_name, species_subset, marginalized_trajectory, mode='r+'):
+        with CMEWriter(filename=filename, mode=mode, system=self) as Writer:
+            Writer._write_marginalized_trajectory(trajectory_name, species_subset, marginalized_trajectory)
 
     def calculate_mutual_information(self, X, Y, base=2):
-        self._check_if_Trajectory_exists()
-        return mutual_information(system=self, X=X, Y=Y, base=base)
+        X = [X] if isinstance(X, str) else X
+        Y = [Y] if isinstance(Y, str) else Y
+        with timeit() as t_calculate_mi:
+            mi = calculate_mutual_information(system=self, X=X, Y=Y, base=base)
+        self.timings['t_calculate_mi'] = t_calculate_mi.elapsed
+        return mi
 
     def calculate_marginalized_trajectory(self, species_subset):
-        self._check_if_Trajectory_exists()
         return marginalize_trajectory(system=self, species_subset=species_subset)
 
     def calculate_average_copy_number(self, species):
-        self._check_if_Trajectory_exists()
         return average_copy_number(system=self, species=species)
-
-    def _check_if_Trajectory_exists(self):
-        if self._Trajectory is None:
-            raise AttributeError('no data in `self.Trajectory`.')
