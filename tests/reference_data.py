@@ -68,7 +68,6 @@ class Ref2and2Iso:
                [ 2, 0,-5, 3],
                [ 0, 2, 4,-4]]
     G_sparse = [-6, -5, -5, -4, 2, 4, 2, 3, 1, 4, 1, 3]
-    k_to_G_map = {}
 
 
 class Ref4and2Iso:
@@ -173,7 +172,6 @@ class RefAllostery:
               [1,0,0,0,0,0,0,0]]
     M = 0
     G_sparse = 0
-    G_dense = [[-1, 1], [1,-1]]
-    k_to_G_map = {}'''
+    G_dense = [[-1, 1], [1,-1]]'''
 
 

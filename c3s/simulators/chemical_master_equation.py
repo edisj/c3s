@@ -227,7 +227,7 @@ class ChemicalMasterEquation:
         Parameters
         ----------
         method : 'IMU' or 'EXPM'
-            whether to call `self._run_IMU()` or `self._run_EXPM()`
+            ...
         dt : float
             value of timestep that multiplies into generator matrix
         N_timesteps : int (default=None)
@@ -253,13 +253,12 @@ class ChemicalMasterEquation:
         Q = self._get_Q(method, dt)
         f = {'IMU': IMU_timestep, 'EXPM': EXPM_timestep}[method]
         f_args = {'IMU': [B, OmegaT], 'EXPM': [Q]}[method]
-        kwargs = {'method': method, 'dt':dt, 'N_timesteps': N_timesteps,
-                  'f': f, 'f_args': f_args, 'Omega':Omega, 'B':B, 'Q':Q, 'is_continued': is_continued}
+        kwargs = {'method': method, 'dt':dt, 'f': f, 'f_args': f_args, 'Omega':Omega, 'B':B, 'Q':Q, 'is_continued': is_continued}
 
         if to_steady_state:
             self._run_to_steady_state(**kwargs)
         else:
-            self._run_to_N_timesteps(**kwargs)
+            self._run_to_N_timesteps(N_timesteps, **kwargs)
 
     def _get_Omega_and_B(self, method, dt):
         if method != 'IMU':
@@ -287,7 +286,7 @@ class ChemicalMasterEquation:
         self.timings['t_matrix_exponential'] = t_matrix_exponential.elapsed
         return Q
 
-    def _run_to_steady_state(self, method, dt, f, f_args, Omega, B, Q, is_continued, diff_threshold=1e-8, **kwargs):
+    def _run_to_steady_state(self, method, dt, f, f_args, Omega, B, Q, is_continued, diff_threshold=1e-8):
         trajectory = self._init_trajectory_list(is_continued)
         with timeit() as t_run:
             ts = 0
@@ -303,15 +302,15 @@ class ChemicalMasterEquation:
         self._Trajectory = self.CMETrajectory(
             trajectory=trajectory, method=method, dt=dt, rates=self._rates, Omega=Omega, B=B, Q=None)
 
-    def _init_trajectory_list(self, continued):
-        if continued:
+    def _init_trajectory_list(self, is_continued):
+        if is_continued:
             p_0 = self.Trajectory.trajectory[-1]
         else:
             p_0 = np.zeros(shape=self.M, dtype=np.float64)
             p_0[self._initial_state_index] = 1.0
         return [p_0]
 
-    def _run_to_N_timesteps(self, N_timesteps, method, dt, f, f_args, Omega, B, Q, is_continued, **kwargs):
+    def _run_to_N_timesteps(self, N_timesteps, method, dt, f, f_args, Omega, B, Q, is_continued):
         """inverse marginalized uniformization method"""
 
         trajectory, start, stop = self._init_trajectory_buffer(N_timesteps, is_continued)
@@ -323,8 +322,8 @@ class ChemicalMasterEquation:
         self._Trajectory = self.CMETrajectory(
             trajectory=trajectory, method=method, dt=dt, rates=self._rates, Omega=Omega, B=B, Q=None)
 
-    def _init_trajectory_buffer(self, N_timesteps, continued):
-        if continued:
+    def _init_trajectory_buffer(self, N_timesteps, is_continued):
+        if is_continued:
             start = len(self.Trajectory.trajectory) - 1
             stop = start + N_timesteps
             trajectory = np.vstack(
