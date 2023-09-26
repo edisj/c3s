@@ -133,7 +133,7 @@ def average_copy_number(system, species):
         # quickly make sure we're dealing with a single species
         assert(len(state) == 1)
     N_timesteps = len(system.Trajectory.trajectory)
-    average_copy_number = np.empty(shape=N_timesteps, dtype=np.float64)
+    acg_copy_number = np.empty(shape=N_timesteps, dtype=np.float64)
 
     # probability a faster way to do this using vectorization/broadcasting
     for ts in range(N_timesteps):
@@ -141,6 +141,6 @@ def average_copy_number(system, species):
         for state, P in marginalized_trajectory.items():
             copy_number = state[0]
             total += np.sum(copy_number * P[ts])
-        average_copy_number[ts] = total
+        acg_copy_number[ts] = total
 
-    return average_copy_number
+    return acg_copy_number

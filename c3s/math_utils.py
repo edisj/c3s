@@ -1,6 +1,7 @@
 import numpy as np
 from numba import njit
-from .sparse_matrix import sm_times_array
+from .sparse_matrix import sm_times_array, SparseMatrix
+from scipy.sparse.linalg import expm
 
 
 @njit
@@ -47,7 +48,8 @@ def generate_subspace(Constraint):
 
 
 #@njit
-def vector_to_number(vector, N, base):
+def vector_to_number(vector, base):
+    N = vector.shape[-1]
     try:
         number = (vector * (base**np.arange(N-1, -1, -1))).sum(axis=1)
     except np.AxisError:
@@ -56,7 +58,7 @@ def vector_to_number(vector, N, base):
 
 
 @njit
-def IMU_timestep(p_0, B, OmegaT):
+def calculate_imu_timestep(p_0, OmegaT, B):
     """Inverse Marginalized Uniformization"""
 
     log_poisson_factor = -OmegaT
@@ -76,7 +78,27 @@ def IMU_timestep(p_0, B, OmegaT):
     return sum_
 
 
+#@njit
+def calculate_Omega(G, scale_factor=1.1):
+    Omega = abs(max(G.values, key=abs)) * scale_factor
+    return Omega
+
+
+#@njit
+def calculate_B(G, M, Omega):
+    B_values = G.values / Omega
+    B_values[:M] = B_values[:M] + 1
+    B = SparseMatrix(G.rows, G.columns, B_values)
+    return B
+
+
 @njit
-def EXPM_timestep(p_0, Q):
+def calculate_expm_timestep(p_0, Q):
     """np.dot() with scipy.sparse.linalg.expm()"""
     return Q.dot(p_0)
+
+
+#@njit
+def calculate_Q(G, dt):
+    """propagator matrix"""
+    return expm(G.to_dense() * dt)

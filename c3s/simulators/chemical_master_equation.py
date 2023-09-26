@@ -1,22 +1,15 @@
 from typing import List, Dict
 from collections import namedtuple
 from pathlib import Path
-
 import numpy as np
-from scipy.sparse.linalg import expm
-
 from .reaction_network import ReactionNetwork
 from ..utils import timeit
 from ..sparse_matrix import SparseMatrix
 from ..h5io import CMEWriter
 from ..marginalization import marginalize_trajectory, average_copy_number
 from ..mutual_information import calculate_mutual_information
-from ..math_utils import (generate_subspace,
-                          combine_state_spaces,
-                          vector_to_number,
-                          binary_search,
-                          IMU_timestep,
-                          EXPM_timestep)
+from ..math_utils import (generate_subspace, combine_state_spaces, vector_to_number, binary_search, calculate_Omega,
+                          calculate_B, calculate_Q, calculate_imu_timestep, calculate_expm_timestep)
 
 
 class ChemicalMasterEquation:
@@ -38,98 +31,59 @@ class ChemicalMasterEquation:
     # use a namedtuple to store trajectory data/metadata cleanly
     CMETrajectory = namedtuple("CMETrajectory", ['trajectory', 'method', 'dt', 'rates', 'Omega', 'B', 'Q'])
 
-    def __init__(self, config=None, initial_populations=None, empty=False):
+    def __init__(self, config=None, initial_copy_numbers=None, empty=False):
         """
 
         Parameters
         ----------
         config : str or Dict
             path to yaml config file that specifies chemical reactions and elementary rates
-        initial_populations : Dict[str: int]
-            dictionary of initial species populations,
+        initial_copy_numbers : Dict[str: int] (default=None)
+            dictionary of initial species copy numbers,
             if a species population is not specified, it's initial population is taken to be 0
         empty : bool (default=False)
             set to `True` to build system by reading data file
 
         """
 
-        # parse config file information
         self.reaction_network = ReactionNetwork(config)
         self.species = self.reaction_network.species
         self._rates = self.reaction_network.rates
-        self._initial_populations = initial_populations
-
-        if not empty:
-            # dictionary to hold timings of various codeblocks for benchmarking
-            self.timings: Dict[str, float] = {}
-            # build system from config
-            self._constitutive_states = self._set_constitutive_states()
-            self._base = self._constitutive_states.max() + 1
-            self._states_as_numbers = self._convert_states_to_numbers(N=self.N, base=self._base)
-            self._generator_matrix = self._set_generator_matrix()
-            self._initial_state, self._initial_state_index = self._determine_initial_state()
-        else:
-            self._constitutive_states = None
-            self._states_as_numbers = None
-            self._generator_matrix = None
-            self._initial_state = None
-            self._initial_state_index = 0
-
+        if initial_copy_numbers is not None:
+            for species in initial_copy_numbers.keys():
+                if species not in self.species:
+                    raise KeyError(f'{species} is not a valid species for this system')
+        self._initial_copy_numbers = initial_copy_numbers
+        self._empty = empty
+        # dictionary to hold timings of various codeblocks for benchmarking
+        self.timings: Dict[str, float] = {}
+        self._constitutive_states = self._set_constitutive_states()
+        self._base = self._constitutive_states.max() + 1 if not empty else None
+        self._states_as_numbers = vector_to_number(self._constitutive_states, self._base) if not empty else None
+        self._generator_matrix = self._set_generator_matrix()
+        self._initial_state = np.array([
+            self._initial_copy_numbers[species] if species in self._initial_copy_numbers
+            else 0 for species in self.species]) if initial_copy_numbers else None
+        self._initial_state_index = binary_search(
+            self._states_as_numbers, vector_to_number(self._initial_state, self._base)) if self._initial_state else 0
         # will be filled with `self.run()` method is called
         self._Trajectory = None
 
-    # use nice Pythonic attribute access
-    @property
-    def N(self) -> int:
-        """N is the total number of unique chemical species in the reaction network"""
-        return len(self.reaction_network.species)
-
-    @property
-    def K(self) -> int:
-        """K is the total number of reactions in the reaction network"""
-        return len(self.reaction_network.reaction_matrix)
-
-    @property
-    def M(self) -> int:
-        """M is the total number of states in the state space"""
-        return len(self._constitutive_states)
-    @M.setter
-    def M(self, value):
-        self.M = value
-
-    @property
-    def G(self) -> SparseMatrix:
-        """G is the MxM transition rate matrix in sparse matrix format"""
-        return self._generator_matrix
-    @G.setter
-    def G(self, value):
-        self._generator_matrix = value
-
-    @property
-    def states(self) -> np.ndarray:
-        """states is MxN array where states[m,n] gives the copy number of the n'th species in the m'th state"""
-        return self._constitutive_states
-    @states.setter
-    def states(self, value):
-        self._constitutive_states = value
-    @property
-    def states_as_numbers(self) -> np.ndarray:
-        """state vectors represented as numbers"""
-        return self._states_as_numbers
-
-    @property
-    def Trajectory(self) -> namedtuple:
-        """probability trajectory is contained in Trajectory.trajectory"""
-        return self._Trajectory
-    @Trajectory.setter
-    def Trajectory(self, value):
-        self._Trajectory = value
-
     def _set_constitutive_states(self):
+        if self._empty:
+            return None
         with timeit() as t_build_state_space:
             constitutive_states = self._build_state_space()
         self.timings['t_build_state_space'] = t_build_state_space.elapsed
         return constitutive_states
+
+    def _set_generator_matrix(self):
+        if self._empty:
+            return None
+        with timeit() as t_set_generator_matrix:
+            generator_matrix = self._build_generator_matrix()
+        self.timings['t_build_generator_matrix'] = t_set_generator_matrix.elapsed
+        return generator_matrix
 
     def _build_state_space(self):
         subspaces = [generate_subspace(Constraint) for Constraint in self.reaction_network.constraints]
@@ -138,43 +92,13 @@ class ChemicalMasterEquation:
         else:
             return np.stack(subspaces[0])
 
-    def _convert_states_to_numbers(self, N, base):
-        return vector_to_number(self._constitutive_states, N, base)
-
-    def _determine_initial_state(self):
-
-        if self._initial_populations is None:
-            return None, 0
-
-        # ensure all species are valid
-        for species in self._initial_populations.keys():
-            if species not in self.species:
-                raise KeyError(f'{species} is not a valid species. It must be in one of the '
-                               f'chemical reactions specified in the original config file.')
-
-        initial_state_as_vector = np.array([self._initial_populations[species]
-                                            if species in self._initial_populations else 0
-                                            for species in self.species])
-        initial_state_as_number = vector_to_number(initial_state_as_vector, self.N, self._base)
-        initial_state_index = binary_search(self._states_as_numbers, initial_state_as_number)
-
-        return initial_state_as_vector, initial_state_index
-
-    def _set_generator_matrix(self):
-        with timeit() as t_set_generator_matrix:
-            generator_matrix = self._build_generator_matrix()
-        self.timings['t_build_generator_matrix'] = t_set_generator_matrix.elapsed
-        return generator_matrix
-
     def _build_generator_matrix(self):
         M, K, N, base = self.M, self.K, self.N, self._base
-        # gives which elements of G the k'th reaction is responsible for
-        #self._k_to_G_map = {k: [] for k in range(self.K)}
 
         G_rows = [i for i in range(M)]
         G_cols = [j for j in range(M)]
         G_values = [0.0 for _ in range(M)]
-        reactions_as_numbers = vector_to_number(self.reaction_network.reaction_matrix, N, base)
+        reactions_as_numbers = vector_to_number(self.reaction_network.reaction_matrix, base)
         for j, state_j in enumerate(self._states_as_numbers):
             for k, reaction in enumerate(reactions_as_numbers):
                 state_i = state_j + reaction
@@ -196,9 +120,104 @@ class ChemicalMasterEquation:
                     G_cols.append(j)
                     G_values.append(propensity)
                     G_values[j] -= propensity
-                    #self._k_to_G_map[k].append((i,j))
 
         return SparseMatrix(np.array(G_rows), np.array(G_cols), np.array(G_values))
+
+    def run(self,
+            method='IMU',
+            dt=1.0,
+            N_timesteps=None,
+            to_steady_state=False,
+            overwrite=False,
+            is_continued_run=False):
+        """runs the chemical master equation simulation
+
+        Parameters
+        ----------
+        method : 'IMU' or 'EXPM' (default='IMU')
+            ...
+        dt : float (default=1.0)
+            value of timestep that multiplies into generator matrix
+        N_timesteps : int (default=None)
+            number of simulation timesteps, must be specified if `to_steady_state=False`
+        to_steady_state : bool (default=False)
+            set to `True` to run simulation until steady state condition has been achieved
+        overwrite : bool (default=False)
+            set to `True` to rerun a simulation from scratch and overwrite data in `self.Trajectory`
+        is_continued_run : bool (default=False)
+            set to `True` to run continued simulation and concatenate results with `self.Trajectory`
+        """
+        # handle errors early
+        if (N_timesteps is None) and (not to_steady_state):
+            raise ValueError("`N_timesteps` must be specified if `to_steady_state=False`.")
+        if (self._Trajectory is not None) and (not overwrite) and (not is_continued_run):
+            raise AttributeError("Data already found in `self.Trajectory`. To overwrite this data, set `overwrite=True`.")
+
+        with timeit() as t_build_B_matrix:
+            Omega = calculate_Omega(self.G) if method == 'IMU' else None
+            OmegaT = Omega * dt if method == 'IMU' else None
+            B = calculate_B(self.G, self.M, Omega) if method =='IMU' else None
+        self.timings['t_build_B_matrix'] = t_build_B_matrix.elapsed
+        with timeit() as t_matrix_exponential:
+            Q = calculate_Q(self.G, dt) if method == 'EXPM' else None
+        self.timings['t_matrix_exponential'] = t_matrix_exponential.elapsed
+        method_dispatch = {'IMU': {'function': calculate_imu_timestep,
+                                   'args': [OmegaT, B],
+                                   'method': 'IMU'},
+                           'EXPM': {'function': calculate_expm_timestep,
+                                    'args': [Q],
+                                    'method': 'EXPM'}}
+
+        if is_continued_run:
+            p_0 = self.Trajectory.trajectory[-1]
+        else:
+            p_0 = np.zeros(shape=self.M, dtype=np.float64)
+            p_0[self._initial_state_index] = 1.0
+
+        if to_steady_state:
+            trajectory = self._run_until_steady_state(method_dispatch[method], p_0)
+        else:
+            trajectory = self._run_N_timesteps(method_dispatch[method], N_timesteps, is_continued_run, p_0)
+        trajectory = np.vstack((self.Trajectory.trajectory, trajectory)) if is_continued_run else np.asarray(trajectory)
+
+        self._Trajectory = self.CMETrajectory(
+            trajectory=trajectory, method=method, dt=dt, rates=self._rates, Omega=Omega, B=B, Q=Q)
+
+    def _run_until_steady_state(self, method_dispatch, is_continued_run, p_0):
+
+        function, args, method = method_dispatch.values()
+        #trajectory = [function(p_0, *args)] if is_continued_run else [p_0]
+        trajectory = [p_0]
+        with timeit() as t_run:
+            ts = 0
+            while True:
+                trajectory.append(function(trajectory[ts], *args))
+                P_difference = trajectory[ts + 1] - trajectory[ts]
+                if P_difference.max() < 1e-6:
+                    break
+                ts += 1
+        self.timings[f't_run_{method}'] = t_run.elapsed
+
+        return trajectory
+
+    def _run_N_timesteps(self, method_dispatch, N_timesteps, is_continued_run, p_0):
+
+        if not is_continued_run:
+            trajectory = np.empty((N_timesteps, self.M))
+            trajectory[0] = p_0
+            start, stop = 0, N_timesteps-1
+        else:
+            start = len(self.Trajectory.trajectory) - 1
+            stop = start + N_timesteps
+            trajectory = np.vstack([self._Trajectory.trajectory, np.empty((N_timesteps, self.M))])
+
+        function, args, method = method_dispatch.values()
+        with timeit() as t_run:
+            for ts in range(start, stop):
+                trajectory[ts + 1] = function(trajectory[ts], *args)
+        self.timings[f't_run_{method}'] = t_run.elapsed
+
+        return trajectory
 
     def update_rates(self, new_rates):
         """updates `self.rates` and `self.G` with new transition rates"""
@@ -215,129 +234,6 @@ class ChemicalMasterEquation:
         # recreate G with new rates
         self._generator_matrix = self._build_generator_matrix()
 
-    def reset_rates(self):
-        """resets `self.rates` to the values of the original config file"""
-        rates_from_config = [rate for rate in self.reaction_network._original_config['reactions'].values()]
-        original_rates = {rate[0]: rate[1] for rate in rates_from_config}
-        self.update_rates(original_rates)
-
-    def run(self, method, dt, N_timesteps=None, to_steady_state=False, overwrite=False, is_continued=False):
-        """runs the chemical master equation simulation
-
-        Parameters
-        ----------
-        method : 'IMU' or 'EXPM'
-            ...
-        dt : float
-            value of timestep that multiplies into generator matrix
-        N_timesteps : int (default=None)
-            number of simulation timesteps, must be specified if `to_steady_state=False`
-        to_steady_state : bool (default=False)
-            set to `True` to run simulation until steady state condition has been achieved
-        overwrite : bool (default=False)
-            set to `True` to rerun a simulation from scratch and overwite data in `self.Trajectory`
-        is_continued : bool (default=False)
-            set to `True` to run continued simulation and concatenate results with `self.Trajectory`
-
-        """
-
-        # handle errors early
-        if (N_timesteps is None) and (not to_steady_state):
-            raise ValueError("`N_timesteps` must be specified if `to_steady_state=False`.")
-        if (self._Trajectory is not None) and (not overwrite):
-            # ok if we are concatenating new data
-            if not is_continued:
-                raise AttributeError("Data already found in `self.Trajectory`. To overwrite this data, set `overwrite=True`.")
-
-        Omega, OmegaT, B = self._get_Omega_and_B(method, dt)
-        Q = self._get_Q(method, dt)
-        f = {'IMU': IMU_timestep, 'EXPM': EXPM_timestep}[method]
-        f_args = {'IMU': [B, OmegaT], 'EXPM': [Q]}[method]
-        kwargs = {'method': method, 'dt':dt, 'f': f, 'f_args': f_args, 'Omega':Omega, 'B':B, 'Q':Q, 'is_continued': is_continued}
-
-        if to_steady_state:
-            self._run_to_steady_state(**kwargs)
-        else:
-            self._run_to_N_timesteps(N_timesteps, **kwargs)
-
-    def _get_Omega_and_B(self, method, dt):
-        if method != 'IMU':
-            return None, None, None
-        with timeit() as t_build_B_matrix:
-            Omega = self._calculate_Omega()
-            OmegaT = Omega*dt
-            B = self._build_B_matrix(Omega)
-        self.timings['t_build_B_matrix'] = t_build_B_matrix.elapsed
-        return Omega, OmegaT, B
-
-    def _calculate_Omega(self, scale_factor=1.1):
-        return abs(max(self.G.values, key=abs)) * scale_factor
-
-    def _build_B_matrix(self, Omega):
-        B_values = self.G.values / Omega
-        B_values[:self.M] = B_values[:self.M] + 1
-        return SparseMatrix(self.G.rows, self.G.columns, B_values)
-
-    def _get_Q(self, method, dt):
-        if method != 'EXPM':
-            return None
-        with timeit() as t_matrix_exponential:
-            Q = expm(self._generator_matrix.to_dense() * dt)
-        self.timings['t_matrix_exponential'] = t_matrix_exponential.elapsed
-        return Q
-
-    def _run_to_steady_state(self, method, dt, f, f_args, Omega, B, Q, is_continued, diff_threshold=1e-8):
-        trajectory = self._init_trajectory_list(is_continued)
-        with timeit() as t_run:
-            ts = 0
-            while True:
-                trajectory.append( f(trajectory[ts], *f_args) )
-                P_difference = trajectory[ts + 1] - trajectory[ts]
-                if P_difference.max() < diff_threshold:
-                    break
-                ts += 1
-        self.timings[f't_run_{method}'] = t_run.elapsed
-
-        trajectory = np.vstack((self.Trajectory.trajectory, np.array(trajectory))) if is_continued else np.array(trajectory)
-        self._Trajectory = self.CMETrajectory(
-            trajectory=trajectory, method=method, dt=dt, rates=self._rates, Omega=Omega, B=B, Q=None)
-
-    def _init_trajectory_list(self, is_continued):
-        if is_continued:
-            p_0 = self.Trajectory.trajectory[-1]
-        else:
-            p_0 = np.zeros(shape=self.M, dtype=np.float64)
-            p_0[self._initial_state_index] = 1.0
-        return [p_0]
-
-    def _run_to_N_timesteps(self, N_timesteps, method, dt, f, f_args, Omega, B, Q, is_continued):
-        """inverse marginalized uniformization method"""
-
-        trajectory, start, stop = self._init_trajectory_buffer(N_timesteps, is_continued)
-        with timeit() as t_run:
-            for ts in range(start, stop):
-                trajectory[ts + 1] = f(trajectory[ts], *f_args)
-        self.timings[f't_run_{method}'] = t_run.elapsed
-
-        self._Trajectory = self.CMETrajectory(
-            trajectory=trajectory, method=method, dt=dt, rates=self._rates, Omega=Omega, B=B, Q=None)
-
-    def _init_trajectory_buffer(self, N_timesteps, is_continued):
-        if is_continued:
-            start = len(self.Trajectory.trajectory) - 1
-            stop = start + N_timesteps
-            trajectory = np.vstack(
-                [self._Trajectory.trajectory, np.empty(shape=(N_timesteps, self.M), dtype=np.float64)])
-        else:
-            start = 0
-            stop = N_timesteps - 1
-            trajectory = np.empty(shape=(N_timesteps, self.M), dtype=np.float64)
-            trajectory[0] = np.zeros(shape=self.M, dtype=np.float64)
-            # fixing initial probability to be 1 in the initial state
-            trajectory[0, self._initial_state_index] = 1.0
-
-        return trajectory, start, stop
-
     def write_system(self, filename, mode='x'):
         """writes system data to HDF5 file"""
         with CMEWriter(filename=filename, mode=mode, system=self) as Writer:
@@ -353,7 +249,7 @@ class ChemicalMasterEquation:
         with CMEWriter(filename=filename, mode=mode, system=self) as Writer:
             Writer._write_trajectory(trajectory_name=trajectory_name)
 
-    def write_mutual_information(self, filename, trajectory_name, data, base, X, Y, mode='r+'):
+    def write_mutual_information(self, filename, trajectory_name, data, X, Y, base=2, mode='r+'):
         """"""
         X = [X] if isinstance(X, str) else X
         Y = [Y] if isinstance(Y, str) else Y
@@ -381,3 +277,44 @@ class ChemicalMasterEquation:
 
     def calculate_average_copy_number(self, species):
         return average_copy_number(system=self, species=species)
+
+    @property
+    def N(self) -> int:
+        """N is the total number of unique chemical species in the reaction network"""
+        return len(self.reaction_network.species)
+    @property
+    def K(self) -> int:
+        """K is the total number of reactions in the reaction network"""
+        return len(self.reaction_network.reaction_matrix)
+    @property
+    def M(self) -> int:
+        """M is the total number of states in the state space"""
+        return len(self._constitutive_states)
+    @M.setter
+    def M(self, value):
+        self.M = value
+    @property
+    def G(self) -> SparseMatrix:
+        """G is the MxM transition rate matrix in sparse matrix format"""
+        return self._generator_matrix
+    @G.setter
+    def G(self, value):
+        self._generator_matrix = value
+    @property
+    def states(self) -> np.ndarray:
+        """states is MxN array where states[m,n] gives the copy number of the n'th species in the m'th state"""
+        return self._constitutive_states
+    @states.setter
+    def states(self, value):
+        self._constitutive_states = value
+    @property
+    def states_as_numbers(self) -> np.ndarray:
+        """state vectors represented as numbers"""
+        return self._states_as_numbers
+    @property
+    def Trajectory(self) -> namedtuple:
+        """probability trajectory is contained in `Trajectory.trajectory`"""
+        return self._Trajectory
+    @Trajectory.setter
+    def Trajectory(self, value):
+        self._Trajectory = value

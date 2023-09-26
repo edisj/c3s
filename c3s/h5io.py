@@ -100,8 +100,8 @@ class CMEWriter:
         self._write_original_config()
         self._write_states()
         self._write_generator_matrix()
-        if self.system._initial_populations:
-            self._write_initial_populations()
+        if self.system._initial_copy_numbers:
+            self._write_initial_copy_numbers()
 
     def _write_original_config(self):
         """"""
@@ -118,7 +118,8 @@ class CMEWriter:
     def _write_states(self):
         """"""
         states_dataset = self._file_root.create_dataset(name='constitutive_states', data=self.system.states)
-        states_dataset.attrs['code_time'] = self.system.timings['t_build_state_space']
+        if self.system.timings:
+            states_dataset.attrs['code_time'] = self.system.timings['t_build_state_space']
 
     def _write_generator_matrix(self):
         """"""
@@ -126,12 +127,13 @@ class CMEWriter:
         G_group.create_dataset(name='G_rows', data=self.system.G.rows)
         G_group.create_dataset(name='G_columns', data=self.system.G.columns)
         G_group.create_dataset(name='G_values', data=self.system.G.values)
-        G_group.attrs['code_time'] = self.system.timings['t_build_generator_matrix']
+        if self.system.timings:
+            G_group.attrs['code_time'] = self.system.timings['t_build_generator_matrix']
 
-    def _write_initial_populations(self):
+    def _write_initial_copy_numbers(self):
         """"""
-        initial_pop_group = self._file_root.create_group(name='initial_populations', track_order=True)
-        for species, count in self.system._initial_populations.items():
+        initial_pop_group = self._file_root.create_group(name='initial_copy_numbers', track_order=True)
+        for species, count in self.system.initial_copy_numbers.items():
             species_group = initial_pop_group.create_group(name=species)
             species_group.attrs['count'] = count
 
@@ -154,8 +156,9 @@ class CMEWriter:
             rate_group.attrs['value'] = rate_value
 
         trajectory_dataset = trajectory_group.create_dataset(name='trajectory', data=Trajectory.trajectory)
-        trajectory_dataset.attrs['code_time'] = self.system.timings[f't_run_{Trajectory.method}']
         trajectory_dataset.attrs['dt'] = Trajectory.dt
+        if self.system.timings:
+            trajectory_dataset.attrs['code_time'] = self.system.timings[f't_run_{Trajectory.method}']
 
         if Trajectory.method == 'IMU':
             B_group = trajectory_group.create_group('B_matrix', track_order=True)
@@ -163,12 +166,14 @@ class CMEWriter:
             B_group.create_dataset(name='B_columns', data=Trajectory.B.columns)
             B_group.create_dataset(name='B_values', data=Trajectory.B.values)
             B_group.attrs['Omega'] = Trajectory.Omega
-            B_group.attrs['code_time'] = self.system.timings['t_build_B_matrix']
+            if self.system.timings:
+                B_group.attrs['code_time'] = self.system.timings['t_build_B_matrix']
         elif Trajectory.method == 'EXPM':
             Q_dataset = trajectory_group.create_dataset(name='Q', data=Trajectory.Q)
-            Q_dataset.attrs['code_time'] = self.system.timings['t_matrix_exponential']
+            if self.system.timings:
+                Q_dataset.attrs['code_time'] = self.system.timings['t_matrix_exponential']
 
-    def _write_mutual_information(self, trajectory_name, data, mi_base, X, Y):
+    def _write_mutual_information(self, trajectory_name, data, base, X, Y):
         """"""
         trajectory_group = self._file_root.require_group(f'trajectories/{trajectory_name}')
         if 'calculations' not in trajectory_group:
@@ -179,8 +184,9 @@ class CMEWriter:
         mi_dataset = calculations_group.create_dataset(name='mutual_information', data=data)
         mi_dataset.attrs['X'] = str(X)
         mi_dataset.attrs['Y'] = str(Y)
-        mi_dataset.attrs['base'] = mi_base
-        mi_dataset.attrs['code_time'] = self.system.timings['t_calculate_mi']
+        mi_dataset.attrs['base'] = base
+        if self.system.timings:
+            mi_dataset.attrs['code_time'] = self.system.timings['t_calculate_mi']
 
     def _write_avg_copy_number(self, trajectory_name, species, avg_copy_number):
         trajectory_group = self._file_root.require_group(f'trajectories/{trajectory_name}')
@@ -246,13 +252,13 @@ class CMEReader:
     def generate_system_from_file(self):
         # first get reaction network info
         config_dictionary = self._read_original_config()
-        if 'initial_popultaions' in self._file_root:
-            initial_populations = {species: species.attrs['count'] for species in self._file_root['initial_populations']}
+        if 'initial_copy_numbers' in self._file_root:
+            initial_copy_numbers = {species: species.attrs['count'] for species in self._file_root['initial_copy_numbers']}
         else:
-            initial_populations = None
+            initial_copy_numbers = None
         # start with an empty system
         system = c3s.ChemicalMasterEquation(config=config_dictionary,
-                                            initial_populations=initial_populations,
+                                            initial_copy_numbers=initial_copy_numbers,
                                             empty=True)
         # fill in attribute data from file
         system._constitutive_states = self._read_states()

@@ -2,8 +2,6 @@
 Unit and regression test for the c3s package.
 """
 import pytest
-#import numpy as np
-#import math
 from c3s import ChemicalMasterEquation as CME
 from c3s.h5io import build_system_from_file
 from numpy.testing import assert_equal, assert_array_almost_equal,assert_array_equal#, assert_almost_equal
@@ -28,7 +26,7 @@ class BaseTest:
         for k, reaction in enumerate(system.reaction_network.reactions):
             assert_equal(reaction.k, k)
             assert_equal(reaction.reaction, self.reactions[k])
-            assert_equal(reaction.reactants, self.reactants[k] )
+            assert_equal(reaction.reactants, self.reactants[k])
             assert_equal(reaction.products, self.products[k])
             assert_equal(reaction.rate_name, self.rate_names[k])
             assert_equal(reaction.rate, self.rates[k])
@@ -70,7 +68,7 @@ class BaseTest:
         system.run(dt=dt, method=method, N_timesteps=N_timesteps, overwrite=True)
         trajectory_contiguous = system.Trajectory.trajectory
         system.run(dt=dt, method=method, N_timesteps=5, overwrite=True)
-        system.run(dt=dt, method=method, N_timesteps=5, is_continued=True)
+        system.run(dt=dt, method=method, N_timesteps=5, is_continued_run=True)
         trajectory_continued = system.Trajectory.trajectory
         assert_array_equal(trajectory_contiguous, trajectory_continued)
 
@@ -90,46 +88,41 @@ class BaseTest:
             assert_equal(system.species, system2.species)
             assert_array_equal(system.Trajectory.trajectory, system2.Trajectory.trajectory)
 
-    def test_reset_rates(self, system):
-        ...
+    def test_update_rates(self, system):
+        system.update_rates(self.updated_rates)
+        for name, desired_rate in self.updated_rates.items():
+            for reaction in system.reaction_network.reactions:
+                if reaction.rate_name == name:
+                    assert_equal(reaction.rate, desired_rate)
+                    assert_equal(system._rates[reaction.k], desired_rate)
+
+            assert_array_equal(system.G.values, self.G_sparse_updated)
+            assert_array_equal(system.G.to_dense(), self.G_dense_updated)
 
     def test_initial_state(self, system):
         ...
 
+    def test_marginalized_trajectory(self, system):
+        ...
+
+    def test_mutual_information(self, system):
+        ...
+
 
 class TestBinary(BaseTest, RefBinary):
-    def test_update_rates(self, system):
-        system.update_rates(self.updated_rates)
-        for reaction, desired_rate in zip(system.reaction_network.reactions, self.updated_rates.values()):
-            assert_equal(reaction.rate, desired_rate)
-            assert_array_equal(system.G.values, self.G_sparse_updated)
-            assert_array_equal(system.G.to_dense(), self.G_dense_updated)
-    '''def test_mutual_information(self):
-        X = 'A'
-        Y = 'B'
-        correct_values = np.array([0., 0.43858457, 0.6457636 , 0.77025155, 0.84901701,
-                                   0.90004559, 0.93353366, 0.95567906, 0.9703932 , 0.98019935])
-
-    def test_mutual_information_many_body(self):
-        X = 'A'
-        Y = 'B'
-        correct_values = np.array([0., 0.92385593, 1.28269609, 1.48006893, 1.59832796,
-                                   1.67229091, 1.71971752, 1.75060155, 1.77091263, 1.78435647])'''
+    pass
 
 
 class Test2and2Iso(BaseTest, Ref2and2Iso):
     pass
-    '''def test_mutual_information_iso_switches(self, isolated_switches):
-
-        X = ['A', 'A*']
-        Y = ['B', 'B*']
-        isolated_switches.calculate_instantaneous_mutual_information(X, Y, base=2)
-        mut_inf = isolated_switches._mutual_information
-        correct_values = np.array([0.00000000e+00, 1.59908175e-15, 3.24752736e-15, 5.52514748e-15,
-                                   7.38322748e-15, 9.14533561e-15, 1.12503565e-14, 1.35398846e-14,
-                                   1.54150075e-14, 1.73809943e-14])
-        assert_array_almost_equal(mut_inf[0::10], correct_values)'''
 
 
 class Test4and2Iso(BaseTest, Ref4and2Iso):
-    pass
+    def test_update_rates(self):
+        pass
+
+class TestMMEnzyme:
+    ...
+
+class TestA2SM:
+    ...
