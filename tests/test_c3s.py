@@ -3,6 +3,7 @@ Unit and regression test for the c3s package.
 """
 import pytest
 from c3s import ChemicalMasterEquation as CME
+from c3s.marginalization import get_point_mappings
 from c3s.h5io import build_system_from_file
 from numpy.testing import assert_equal, assert_array_almost_equal,assert_array_equal#, assert_almost_equal
 from .reference_data import RefBinary, Ref2and2Iso, Ref4and2Iso
@@ -12,7 +13,7 @@ class BaseTest:
 
     @pytest.fixture()
     def system(self):
-        return CME(config=self.reactions_file)
+        return CME(config=self.config)
 
     @pytest.fixture()
     def outfile(self, tmpdir):
@@ -54,21 +55,19 @@ class BaseTest:
 
     def test_IMU_vs_EXPM(self, system):
         N_timesteps = 15
-        dt = 1
-        system.run(dt=dt, method='IMU', N_timesteps=N_timesteps)
+        system.run(method='IMU', N_timesteps=N_timesteps)
         IMU_trajectory = system.Trajectory.trajectory
-        system.run(dt=dt, method='EXPM', N_timesteps=N_timesteps, overwrite=True)
+        system.run(method='EXPM', N_timesteps=N_timesteps, overwrite=True)
         EXPM_trajectory = system.Trajectory.trajectory
         assert_array_almost_equal(IMU_trajectory, EXPM_trajectory, decimal=5)
 
     @pytest.mark.parametrize('method', ('EXPM', 'IMU'))
     def test_is_continued(self, system, method):
         N_timesteps = 10
-        dt = 1
-        system.run(dt=dt, method=method, N_timesteps=N_timesteps, overwrite=True)
+        system.run(method=method, N_timesteps=N_timesteps, overwrite=True)
         trajectory_contiguous = system.Trajectory.trajectory
-        system.run(dt=dt, method=method, N_timesteps=5, overwrite=True)
-        system.run(dt=dt, method=method, N_timesteps=5, is_continued_run=True)
+        system.run(method=method, N_timesteps=5, overwrite=True)
+        system.run(method=method, N_timesteps=5, is_continued_run=True)
         trajectory_continued = system.Trajectory.trajectory
         assert_array_equal(trajectory_contiguous, trajectory_continued)
 
@@ -99,10 +98,24 @@ class BaseTest:
             assert_array_equal(system.G.values, self.G_sparse_updated)
             assert_array_equal(system.G.to_dense(), self.G_dense_updated)
 
-    def test_initial_state(self, system):
-        ...
+    def test_initial_state(self):
+        system = CME(config=self.config, initial_copy_numbers=self.initial_copy_numbers)
+        system.run(N_timesteps=3, overwrite=True)
+        assert_array_equal(system.states[self.initial_state_index], self.initial_state)
+        assert_equal(system._initial_state_index, self.initial_state_index)
+        assert_equal(system.trajectory[0][self.initial_state_index], 1.0)
+
+    def test_point_mappings(self, system):
+        system.run(N_timesteps=3)
+        point_mappings = get_point_mappings(self.species_subset, system)
+        for key1, map1, key2 in zip(self.point_map_keys, self.point_map_ids, point_mappings.keys()):
+            assert_array_equal(key1, key2)
+            assert_array_equal(map1, point_mappings[key2])
 
     def test_marginalized_trajectory(self, system):
+        ...
+
+    def test_average_copy_number(self, system):
         ...
 
     def test_mutual_information(self, system):
@@ -115,11 +128,6 @@ class TestBinary(BaseTest, RefBinary):
 
 class Test2and2Iso(BaseTest, Ref2and2Iso):
     pass
-
-
-class Test4and2Iso(BaseTest, Ref4and2Iso):
-    def test_update_rates(self):
-        pass
 
 class TestMMEnzyme:
     ...

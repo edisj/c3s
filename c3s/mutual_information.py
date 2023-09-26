@@ -1,32 +1,23 @@
 import math
 import numpy as np
-from .marginalization import get_PointMappings
+from .marginalization import get_point_mappings
 
 
-def calculate_mutual_information(system, X, Y, base=2):
+def calculate_mutual_information(X, Y, system, base=2):
+    x_map = get_point_mappings(system, X)
+    y_map = get_point_mappings(system, Y)
+    xy_map = get_point_mappings(system, X+Y)
 
-    N_timesteps = len(system.Trajectory.trajectory)
-    PointMappings = get_PointMappings(system=system, X=X, Y=Y)
-
-    mutual_information = np.zeros(shape=N_timesteps, dtype=np.float64)
-    for ts in range(N_timesteps):
-        mi_sum = 0
-        P_t = system.Trajectory.trajectory[ts]
-        for x, x_ids in PointMappings.X.items():
-            for y, y_ids in PointMappings.Y.items():
-                xy_ids = PointMappings.XY[x+y]
-                p_xy = np.sum(P_t[xy_ids])
-                if p_xy == 0:
-                    # add zero to the sum if p_xy is 0
-                    # need to do this because 0*np.log(0) returns an error
-                    continue
-                p_x = np.sum(P_t[x_ids])
-                p_y = np.sum(P_t[y_ids])
-                mi_sum += p_xy * math.log(p_xy / (p_x * p_y), base)
-        mutual_information[ts] = mi_sum
+    mutual_information = np.asarray(
+        [sum([_summand(P[x_ids].sum(), P[y_ids].sum(), P[xy_map[x+y]].sum(), base=base)
+        for x, x_ids in x_map.items() for y, y_ids in y_map.items()]) for P in system.Trajectory.trajectory])
 
     return mutual_information
 
+def _summand(p_x, p_y, p_xy, base=2):
+    if p_xy == 0:
+        return 0
+    return p_xy * math.log(p_xy / (p_x * p_y), base)
 
 """def generate_analytic_MI_function(self, X, Y, base=2):
     Deltas = self._fix_species_and_get_Deltas(X, Y)
