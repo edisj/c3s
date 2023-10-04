@@ -156,6 +156,9 @@ class Gillespie:
         h = -(1 / lambda_) * math.log(1 - u)
         return h
 
+    def probability_trajectory(self):
+        ...
+
     def update_rates(self, new_rates):
         """updates `self.rates` and with new elementary transition rates"""
 

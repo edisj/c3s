@@ -1,13 +1,11 @@
 from typing import Dict
 from collections import namedtuple
-from pathlib import Path
 import numpy as np
 from .reaction_network import ReactionNetwork
 from ..utils import timeit
 from ..sparse_matrix import SparseMatrix
-from ..h5io import CMEWriter
-from ..marginalization import get_marginalized_trajectory, get_average_copy_number
-from ..mutual_information import calculate_mutual_information
+from ..h5io import Write
+from ..calculations import Calculate
 from ..math_utils import (generate_subspace, combine_state_spaces, vector_to_number, binary_search, calculate_Omega,
                           calculate_B, calculate_Q, calculate_imu_timestep, calculate_expm_timestep)
 
@@ -29,7 +27,8 @@ class ChemicalMasterEquation:
     np.seterr(under='raise', over='raise')
 
     # use a namedtuple to store trajectory data/metadata cleanly
-    CMETrajectory = namedtuple("CMETrajectory", ['trajectory', 'method', 'dt', 'rates', 'Omega', 'B', 'Q'])
+    CMETrajectory = namedtuple("CMETrajectory",
+                               ['trajectory', 'method', 'dt', 'N_timesteps', 'rates', 'Omega', 'B', 'Q'])
 
     def __init__(self, config=None, initial_copy_numbers=None, empty=False):
         """
@@ -57,29 +56,27 @@ class ChemicalMasterEquation:
         self._empty = empty
         # dictionary to hold timings of various codeblocks for benchmarking
         self.timings: Dict[str, float] = {}
-        self._constitutive_states = self._set_constitutive_states()
+        self._constitutive_states = self._set_constitutive_states() if not empty else None
         self._base = self._constitutive_states.max() + 1 if not empty else None
         self._states_as_numbers = vector_to_number(self._constitutive_states, self._base) if not empty else None
-        self._generator_matrix = self._set_generator_matrix()
-        self._initial_state = np.array([
-            self._initial_copy_numbers[species] if species in self._initial_copy_numbers
-            else 0 for species in self.species]) if initial_copy_numbers else None
+        self._generator_matrix = self._set_generator_matrix() if not empty else None
+        self._initial_state = np.array([self._initial_copy_numbers[species]
+                                        if species in self._initial_copy_numbers else 0
+                                        for species in self.species]) if initial_copy_numbers else None
         self._initial_state_index = binary_search(
             self._states_as_numbers, vector_to_number(self._initial_state, self._base)) if self._initial_state is not None else 0
         # will be filled with `self.run()` method is called
         self._Trajectory = None
+        self.write = Write(system=self)
+        self.calculate = Calculate(system=self)
 
     def _set_constitutive_states(self):
-        if self._empty:
-            return None
         with timeit() as t_build_state_space:
             constitutive_states = self._build_state_space()
         self.timings['t_build_state_space'] = t_build_state_space.elapsed
         return constitutive_states
 
     def _set_generator_matrix(self):
-        if self._empty:
-            return None
         with timeit() as t_set_generator_matrix:
             generator_matrix = self._build_generator_matrix()
         self.timings['t_build_generator_matrix'] = t_set_generator_matrix.elapsed
@@ -93,19 +90,27 @@ class ChemicalMasterEquation:
             return np.stack(subspaces[0])
 
     def _build_generator_matrix(self):
-        M, K, N, base = self.M, self.K, self.N, self._base
+
+        M, K, N = self.M, self.K, self.N
+        base = self._base
+        rn = self.reaction_network
 
         G_rows = [i for i in range(M)]
         G_cols = [j for j in range(M)]
         G_values = [0.0 for _ in range(M)]
-        reactions_as_numbers = vector_to_number(self.reaction_network.reaction_matrix, base)
-        for j, state_j in enumerate(self._states_as_numbers):
-            for k, reaction in enumerate(reactions_as_numbers):
+        for j, state_j in enumerate(self._constitutive_states):
+            for k, reaction in enumerate(rn.reaction_matrix):
+                # does state_j have the necessary reactants for this reaction?
+                if not np.all(state_j[np.where(reaction < 0)] > 0):
+                    continue
                 state_i = state_j + reaction
-                i = binary_search(self._states_as_numbers, state_i)
+                if any([state_i[n] > max_value for n, max_value in rn.max_copy_numbers.items()]):
+                    continue
+                i = binary_search(self._states_as_numbers, vector_to_number(state_i, base))
                 if i == -1:
                     continue
-                ids = self.reaction_network.species_in_reaction[k]
+                #print(f'\n{j} -> {i}\n{list(state_j)}+\n{list(reaction)}=\n{list(state_i)}')
+                ids = rn.species_in_reaction[k]
                 rate = self._rates[k]
                 h = np.prod([self.states[j,n] for n in ids])
                 # overall reaction propensity for j -> i
@@ -166,13 +171,9 @@ class ChemicalMasterEquation:
         else:
             trajectory = self._run_N_timesteps(N_timesteps, method, function, args, is_continued_run)
 
-        self._Trajectory = self.CMETrajectory(trajectory=trajectory,
-                                              method=method,
-                                              dt=dt,
-                                              rates=self._rates,
-                                              Omega=Omega,
-                                              B=B,
-                                              Q=Q)
+        self._Trajectory = self.CMETrajectory(
+            trajectory=trajectory, method=method, dt=dt, N_timesteps=len(trajectory),
+            rates=self._rates, Omega=Omega, B=B, Q=Q)
 
     def _run_until_steady_state(self, method, function, args, is_continued_run):
         if is_continued_run:
@@ -185,7 +186,7 @@ class ChemicalMasterEquation:
             while True:
                 trajectory.append(function(trajectory[ts], *args))
                 P_difference = trajectory[ts + 1] - trajectory[ts]
-                if P_difference.max() < 1e-6:
+                if P_difference.max() < 1e-5:
                     break
                 ts += 1
         self.timings[f't_run_{method}'] = t_run.elapsed
@@ -213,7 +214,7 @@ class ChemicalMasterEquation:
             for k, reaction in enumerate(self.reaction_network.reactions):
                 if reaction.rate_name == rate_name:
                     updated_reaction = reaction._replace(rate=new_rate)
-                    self.reaction_network.reactions[k] = updated_reaction
+                    self.reaction_network._reactions[k] = updated_reaction
                     self._rates[k] = new_rate
                     break
             else:
@@ -222,49 +223,20 @@ class ChemicalMasterEquation:
         # recreate G with new rates
         self._generator_matrix = self._build_generator_matrix()
 
-    def write_system(self, filename, mode='x'):
-        """writes system data to HDF5 file"""
-        with CMEWriter(filename=filename, mode=mode, system=self) as Writer:
-            Writer._write_system()
-
-    def write_trajectory(self, filename, mode='r+', trajectory_name=None):
-        """write trajectory data to HDF5 file"""
-        if self._Trajectory is None:
-            raise AttributeError('no data in `system.Trajectory`.')
-        # if the file does not exist yet
-        if not Path(filename).is_file():
-            self.write_system(filename)
-        with CMEWriter(filename, mode, system=self) as Writer:
-            Writer._write_trajectory(trajectory_name=trajectory_name)
-
-    def write_mutual_information(self, filename, trajectory_name, data, X, Y, base=2, mode='r+'):
+    def update_constraints(self, *args):
         """"""
-        X = [X] if isinstance(X, str) else X
-        Y = [Y] if isinstance(Y, str) else Y
-        with CMEWriter(filename, mode, system=self) as Writer:
-            Writer._write_mutual_information(trajectory_name, data, base, X, Y)
-
-    def write_avg_copy_number(self, filename, trajectory_name, species, data, mode='r+'):
-        with CMEWriter(filename, mode, system=self) as Writer:
-            Writer._write_avg_copy_number(trajectory_name, species, data)
-
-    def write_marginalized_trajectory(self, filename, trajectory_name, species_subset, marginalized_trajectory, mode='r+'):
-        with CMEWriter(filename, mode, system=self) as Writer:
-            Writer._write_marginalized_trajectory(trajectory_name, species_subset, marginalized_trajectory)
-
-    def calculate_mutual_information(self, X, Y, base=2):
-        X = [X] if isinstance(X, str) else X
-        Y = [Y] if isinstance(Y, str) else Y
-        with timeit() as t_calculate_mi:
-            mi = calculate_mutual_information(X, Y, system=self, base=base)
-        self.timings['t_calculate_mi'] = t_calculate_mi.elapsed
-        return mi
-
-    def calculate_marginalized_trajectory(self, species_subset):
-        return get_marginalized_trajectory(species_subset, system=self)
-
-    def calculate_average_copy_number(self, species):
-        return get_average_copy_number(species, system=self)
+        species = args[:-1]
+        new_value = args[-1]
+        for i, Constraint in enumerate(self.reaction_network._constraints):
+            if sorted(species) == sorted(Constraint.species_involved):
+                new_constraint = Constraint.constraint[:-1] + str(new_value)
+                updated_constraint = Constraint._replace(constraint=new_constraint, value=new_value)
+                self.reaction_network._constraints[i] = updated_constraint
+                break
+        else:
+            raise KeyError(f"`{species}` not found in system.reaction_network.constraints")
+        self._constitutive_states = self._build_state_space()
+        self._generator_matrix = self._build_generator_matrix()
 
     @property
     def N(self) -> int:

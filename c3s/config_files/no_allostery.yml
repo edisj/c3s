@@ -1,14 +1,17 @@
 ---
 reactions:
-  A + S -> AS:    [k_S+,  20]
-  AS    -> A + S: [k_S-,  10]
-  AS    -> A + P: [k_cat, 10]
-  B + P -> BP:    [k_P+,  10]
-  BP    -> B + P: [k_P-,  10]
-  P     -> 0:     [gamma,  0]
-  0     -> S:     [beta,   0]
+  A + S -> AS:   [kon,   1]
+  AS -> A + S:   [koff,  2]
+
+  AS -> A + P:   [kcat,  3]
+
+  B + P -> BP:   [kPon,  4]
+  BP -> B + P:   [kPoff, 5]
+
+  0 -> S:        [beta,  0.5]
+  P -> 0:        [gamma, 0.1]
 constraints:
   - A + AS = 1
   - B + BP = 1
-  - P <= 5
-  - S <= 5
+  - S <= 2
+  - P <= 2

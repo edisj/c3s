@@ -27,32 +27,9 @@ class ReactionNetwork:
         self._rates = [reaction.rate for reaction in self._reactions]
         self._rate_names = [reaction.rate_name for reaction in self._reactions]
         self._species = self._set_species_vector()
+        self._max_copy_numbers = self._set_max_copy_numbers()
         self._reaction_matrix = self._set_reaction_matrix()
         self._species_in_reaction = self._set_species_in_reaction()
-
-    @property
-    def reactions(self):
-        return self._reactions
-    @property
-    def constraints(self):
-        return self._constraints
-    @property
-    def rates(self) -> List[int]:
-        """len(K) List[int] where k'th element gives the value of the rate coefficient for the k'th reaction"""
-        return self._rates
-    @property
-    def species(self) -> List[str]:
-        """len(N) List[str] where n'th element is the name of the n'th species"""
-        return self._species
-    @property
-    def reaction_matrix(self) -> np.ndarray:
-        """(K,N) array where [k,n] element gives the change in the n'th species for the k'th reaction"""
-        return self._reaction_matrix
-    @property
-    def species_in_reaction(self):
-        """len(K) List[List[int]] where k'th element gives the
-        indices of `self.species` that are involved in the k'th reaction"""
-        return self._species_in_reaction
 
     def _parse_reactions(self):
         reactions = []
@@ -113,6 +90,14 @@ class ReactionNetwork:
                     reaction_matrix[reaction.k, n] += 1
         return reaction_matrix
 
+    def _set_max_copy_numbers(self):
+        max_copy_numbers = {}
+        for constraint in self._constraints:
+            if constraint.separator == '<=':
+                n_ids = [self._species.index(species) for species in constraint.species_involved]
+                max_copy_numbers[tuple(n_ids)] = constraint.value
+        return max_copy_numbers
+
     def _set_species_in_reaction(self):
         K = len(self._reactions)
         N = len(self._species)
@@ -124,9 +109,42 @@ class ReactionNetwork:
 
         propensity_strings: List[str] = []
         for n_ids, rate in zip(self._species_in_reaction, self.rates):
-            transition_rate = rate[0]
+            transition_rate = rate
             for n in n_ids:
                 transition_rate += f'c^{self._species[n]}'
             propensity_strings.append(transition_rate)
 
         return propensity_strings
+
+    @property
+    def reactions(self):
+        return self._reactions
+
+    @property
+    def constraints(self):
+        return self._constraints
+
+    @property
+    def rates(self) -> List[int]:
+        """len(K) List[int] where k'th element gives the value of the rate coefficient for the k'th reaction"""
+        return self._rates
+
+    @property
+    def species(self) -> List[str]:
+        """len(N) List[str] where n'th element is the name of the n'th species"""
+        return self._species
+
+    @property
+    def reaction_matrix(self) -> np.ndarray:
+        """(K,N) array where [k,n] element gives the change in the n'th species for the k'th reaction"""
+        return self._reaction_matrix
+
+    @property
+    def max_copy_numbers(self):
+        return self._max_copy_numbers
+
+    @property
+    def species_in_reaction(self):
+        """len(K) List[List[int]] where k'th element gives the
+        indices of `self.species` that are involved in the k'th reaction"""
+        return self._species_in_reaction

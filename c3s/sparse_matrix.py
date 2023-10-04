@@ -5,7 +5,6 @@ from numba.experimental import jitclass
 
 """citation  https://github.com/PessoaP/smn 
 TODO: FILL IN
-
 """
 
 @njit

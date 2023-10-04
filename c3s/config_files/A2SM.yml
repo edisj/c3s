@@ -1,0 +1,25 @@
+---
+reactions:
+  A -> A*:    [kA,  1]
+  A* -> A:    [k*A,  2]
+  AS -> A*S:  [kAS, 2]
+  A*S -> AS:  [k*AS, 1]
+
+  A + S -> AS:   [kon,   2]
+  AS -> A + S:   [koff,  1]
+  A* + S -> A*S: [k*on,  2]
+  A*S -> A* + S: [k*off, 1]
+
+  AS -> A + P:   [kcat,   1]
+  A*S -> A* + P: [k*cat, 10]
+
+  B + P -> BP:   [kP_on,  1]
+  BP -> B + P:   [kP_off, 2]
+
+  0 -> S:        [beta,  1]
+  P -> 0:        [gamma, 1]
+constraints:
+  - A + A* + A*S + AS = 1
+  - B + BP = 1
+  - S <= 1
+  - P <= 1
