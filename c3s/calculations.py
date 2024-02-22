@@ -1,6 +1,6 @@
 import numpy as np
 from math import log
-from typing import  Dict, Tuple
+from typing import Dict, Tuple
 from collections import namedtuple
 
 
@@ -19,8 +19,9 @@ class Calculate:
         Y_traj = self.marginalize_trajectory(Y)
         XY_traj = self.marginalize_trajectory(X + Y)
 
-        mutual_information = []
-        for ts in range(self.system.Trajectory.N_timesteps):
+        N_timesteps = self.system.Trajectory.N_timesteps
+        mutual_information = np.zeros(N_timesteps, dtype=np.float64)
+        for ts in range(N_timesteps):
             _sum = 0.0
             for x, Px in X_traj.items():
                 for y, Py in Y_traj.items():
@@ -35,39 +36,39 @@ class Calculate:
                         continue
                     p_x, p_y = Px[ts], Py[ts]
                     _sum += p_xy*log( (p_xy / (p_x*p_y) ), base)
-            mutual_information.append(_sum)
+            mutual_information[ts] = _sum
 
-        return self.Data(data=np.asarray(mutual_information), X=X, Y=Y, base=base)
+        return self.Data(data=mutual_information, X=X, Y=Y, base=base)
 
     def entropy(self, X, base=2):
-        '''Shannon entropy
-        H(X) = -sum_x p(x)log(p(x))
-        '''
+        """Shannon entropy H(X) = -sum_x p(x)log(p(x))"""
+
         X = [X] if isinstance(X, str) else X
         X_traj = self.marginalize_trajectory(X)
-        Hx = []
-        for ts in range(self.system.Trajectory.N_timesteps):
+        N_timesteps = self.system.Trajectory.N_timesteps
+        Hx = np.zeros(N_timesteps, dtype=np.float64)
+        for ts in range(N_timesteps):
             _sum = 0.0
             for Px in X_traj.values():
                 p_x = Px[ts]
                 if p_x == 0:
                     continue
                 _sum += -p_x*log(p_x, base)
-            Hx.append(_sum)
+            Hx[ts] = _sum
 
-        return self.Data(data=np.asarray(Hx), X=X, Y=None, base=base)
+        return self.Data(data=Hx, X=X, Y=None, base=base)
 
     def conditional_entropy(self, X, Y, base=2):
-        """
-        H(X|Y) = -sum_x,y p(x,y)log( p(x,y)/p(y) )
-        """
+        """H(X|Y) = -sum_x,y p(x,y)log( p(x,y)/p(y) )"""
+
         X = [X] if isinstance(X, str) else X
         Y = [Y] if isinstance(Y, str) else Y
         X_traj = self.marginalize_trajectory(X)
         Y_traj = self.marginalize_trajectory(Y)
         XY_traj = self.marginalize_trajectory(X + Y)
-        H_X_given_Y = []
-        for ts in range(self.system.Trajectory.N_timesteps):
+        N_timesteps = self.system.Trajectory.N_timesteps
+        H_X_given_Y = np.zeros(N_timesteps, dtype=np.float64)
+        for ts in range(N_timesteps):
             _sum = 0.0
             for x, Px in X_traj.items():
                 for y, Py in Y_traj.items():
@@ -82,22 +83,31 @@ class Calculate:
                         continue
                     p_y = Py[ts]
                     _sum += -p_xy*log((p_xy/p_y), base)
-            H_X_given_Y.append(_sum)
+            H_X_given_Y[ts] = _sum
 
-        return self.Data(data=np.asarray(np.asarray(H_X_given_Y)), X=X, Y=Y, base=base)
+        return self.Data(data=H_X_given_Y, X=X, Y=Y, base=base)
 
     def marginalize_trajectory(self, species_subset) -> Dict[Tuple, np.ndarray]:
         point_mappings = self._get_point_mappings(species_subset)
-        marginalized_trajectory = {state: np.asarray([P_t[ids].sum() for P_t in self.system.trajectory])
+        marginalized_trajectory = {state: np.asarray([P_t[ids].sum() for P_t in self.system.trajectory], dtype=np.float64)
                                    for state, ids in point_mappings.items()}
         return marginalized_trajectory
 
-    def avg_copy_number(self, species) -> np.ndarray:
+    def expected_population(self, species) -> np.ndarray:
         """calculates the average copy number for a single chemical species over the probability trajectory"""
+        
         marginalized_trajectory = self.marginalize_trajectory(species)
-        avg_copy_number = np.asarray([sum([c[0] * P_c[ts] for c, P_c in marginalized_trajectory.items()])
-                                      for ts in range(len(self.system.trajectory))])
-        return avg_copy_number
+        N_timesteps = self.system.Trajectory.N_timesteps
+        avg_pop_number = np.zeros(N_timesteps, dtype=np.float64)
+        for ts in range(N_timesteps):
+            _sum = 0.0
+            for count, Pc in marginalized_trajectory.items():
+                c = count[0]
+                p_c = Pc[ts]
+                _sum += c * p_c
+            avg_pop_number[ts] = _sum
+
+        return avg_pop_number
 
     def _get_point_mappings(self, species_subset) -> Dict[Tuple, np.ndarray]:
         """Maps each microstate vector in `system.states` to their marginal probability distribution

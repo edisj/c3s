@@ -19,7 +19,7 @@ class RefBINARY:
     M=2
     N=2
     K=2
-    initial_copy_numbers = {'A':1}
+    initial_populations = {'A':1}
     initial_state = [1,0]
     initial_state_index = 1
     reaction_matrix = [[-1, 1],
@@ -59,7 +59,7 @@ class Ref2and2Iso:
     rate_names = ['k_AB', 'k_BA', 'k_XY', 'k_YX']
     rates = [1, 2, 3, 4]
     species = ['A', 'B', 'X', 'Y']
-    initial_copy_numbers={'A': 1, 'X': 1}
+    initial_populations={'A': 1, 'X': 1}
     initial_state=[1, 0, 1, 0]
     initial_state_index = 3
     M = 4
@@ -119,7 +119,7 @@ class Ref4and2Iso:
     K=10
     N = 6
     species = ['A', 'B', 'C', 'D', 'X', 'Y']
-    initial_copy_numbers={'A': 1, 'Y': 1}
+    initial_populations={'A': 1, 'Y': 1}
     initial_state=[1, 0, 0, 0, 0, 1]
     initial_state_index=6
     reaction_matrix = [[-1, 1, 0, 0, 0, 0],
@@ -264,7 +264,7 @@ class RefNoAllostery:
     rates=[1,2,3,4,5,0.5,0.1]
     N=6
     species=['A', 'AS', 'B', 'BP', 'S', 'P']
-    initial_copy_numbers={'AS': 1, 'BP': 1}
+    initial_populations={'AS': 1, 'BP': 1}
     initial_state=[0, 1, 0, 1, 0, 0]
     initial_state_index=0
     M=2*2*3*3
@@ -345,7 +345,7 @@ class RefAllosteric2State:
     rates = [1, 2, 2, 1, 2, 1, 2, 1, 1, 10, 1, 2, 1, 1]
     N = 8
     species = ['A', 'A*', 'A*S', 'AS', 'B', 'BP', 'S', 'P']
-    initial_copy_numbers={'AS': 1, 'BP': 1}
+    initial_populations={'AS': 1, 'BP': 1}
     initial_state=[0, 0, 0, 1, 0, 1, 0, 0]
     initial_state_index=0
     M = 4*2*2*2

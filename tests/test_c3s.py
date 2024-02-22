@@ -109,7 +109,7 @@ class BaseTest:
             assert_array_equal(system.G.to_dense(), self.G_dense_updated)
 
     def test_initial_state(self, correct_data):
-        system = CME(config=self.config, initial_copy_numbers=correct_data.initial_copy_numbers)
+        system = CME(config=self.config, initial_populations=correct_data.initial_populations)
         system.run(N_timesteps=3, overwrite=True)
         assert_array_equal(system.states[system._initial_state_index], correct_data.initial_state)
         assert_equal(system._initial_state_index, correct_data.initial_state_index)
@@ -173,5 +173,14 @@ class TestNoAllostery(BaseTest, RefNoAllostery):
     def test_mutual_information(self):
         ...
 
-class TestAllosteric2State:
-    ...
+class TestAllosteric2State(BaseTest, RefAllosteric2State):
+    def test_state_space(self):
+        ...
+    def test_generator_matrix(self):
+        ...
+    def test_update_rates(self):
+        ...
+    def test_point_mappings(self):
+        ...
+    def test_mutual_information(self):
+        ...

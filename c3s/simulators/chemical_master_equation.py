@@ -30,7 +30,7 @@ class ChemicalMasterEquation:
     CMETrajectory = namedtuple("CMETrajectory",
                                ['trajectory', 'method', 'dt', 'N_timesteps', 'rates', 'Omega', 'B', 'Q'])
 
-    def __init__(self, config=None, initial_copy_numbers=None, empty=False):
+    def __init__(self, config=None, initial_populations=None, empty=False):
         """
 
         Parameters
@@ -48,11 +48,11 @@ class ChemicalMasterEquation:
         self.reaction_network = ReactionNetwork(config)
         self.species = self.reaction_network.species
         self._rates = self.reaction_network.rates
-        if initial_copy_numbers is not None:
-            for species in initial_copy_numbers.keys():
+        if initial_populations is not None:
+            for species in initial_populations.keys():
                 if species not in self.species:
                     raise KeyError(f'{species} is not a valid species for this system')
-        self._initial_copy_numbers = initial_copy_numbers
+        self._initial_populations = initial_populations
         self._empty = empty
         # dictionary to hold timings of various codeblocks for benchmarking
         self.timings: Dict[str, float] = {}
@@ -60,9 +60,9 @@ class ChemicalMasterEquation:
         self._base = self._constitutive_states.max() + 1 if not empty else None
         self._states_as_numbers = vector_to_number(self._constitutive_states, self._base) if not empty else None
         self._generator_matrix = self._set_generator_matrix() if not empty else None
-        self._initial_state = np.array([self._initial_copy_numbers[species]
-                                        if species in self._initial_copy_numbers else 0
-                                        for species in self.species]) if initial_copy_numbers else None
+        self._initial_state = np.array([self._initial_populations[species]
+                                        if species in self._initial_populations else 0
+                                        for species in self.species]) if initial_populations else None
         self._initial_state_index = binary_search(
             self._states_as_numbers, vector_to_number(self._initial_state, self._base)) if self._initial_state is not None else 0
         # will be filled with `self.run()` method is called
@@ -109,7 +109,7 @@ class ChemicalMasterEquation:
                 i = binary_search(self._states_as_numbers, vector_to_number(state_i, base))
                 if i == -1:
                     continue
-                #print(f'\n{j} -> {i}\n{list(state_j)}+\n{list(reaction)}=\n{list(state_i)}')
+                #print(f'\n{j} -> {i}\n{list(state_j)}\n{list(reaction)}{self.reaction_network.reactions[k].reaction}\n{list(state_i)}')
                 ids = rn.species_in_reaction[k]
                 rate = self._rates[k]
                 h = np.prod([self.states[j,n] for n in ids])
@@ -186,7 +186,7 @@ class ChemicalMasterEquation:
             while True:
                 trajectory.append(function(trajectory[ts], *args))
                 P_difference = trajectory[ts + 1] - trajectory[ts]
-                if P_difference.max() < 1e-5:
+                if P_difference.max() < 1e-12:
                     break
                 ts += 1
         self.timings[f't_run_{method}'] = t_run.elapsed
@@ -218,8 +218,7 @@ class ChemicalMasterEquation:
                     self._rates[k] = new_rate
                     break
             else:
-                raise KeyError(f'{rate_name} is not a valid rate for this system. Valid rates'
-                               f'are listed in `self.rates`.')
+                raise KeyError(f'{rate_name} is an unknown rate for this system.')
         # recreate G with new rates
         self._generator_matrix = self._build_generator_matrix()
 

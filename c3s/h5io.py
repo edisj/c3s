@@ -148,8 +148,8 @@ class CMEWriter:
         self._write_original_config()
         self._write_states()
         self._write_generator_matrix()
-        if self.system._initial_copy_numbers is not None:
-            self._write_initial_copy_numbers()
+        if self.system._initial_populations is not None:
+            self._write_initial_populations()
 
     def _write_original_config(self):
         """"""
@@ -177,10 +177,10 @@ class CMEWriter:
         if self.system.timings:
             G_group.attrs['code_time'] = self.system.timings['t_build_generator_matrix']
 
-    def _write_initial_copy_numbers(self):
+    def _write_initial_populations(self):
         """"""
-        initial_pop_group = self._file_root.create_group(name='initial_copy_numbers', track_order=True)
-        for species, count in self.system._initial_copy_numbers.items():
+        initial_pop_group = self._file_root.create_group(name='initial_populations', track_order=True)
+        for species, count in self.system._initial_populations.items():
             species_group = initial_pop_group.create_group(name=species)
             species_group.attrs['count'] = count
 
@@ -323,10 +323,10 @@ class CMEReader:
         #if 'initial_copy_numbers' in self._file_root:
         #    initial_copy_numbers = {key: self._file_root[f'initial_copy_numbers/{key}'].attrs['count'] for key in self._file_root['initial_copy_numbers'].keys()}
         #else:
-        initial_copy_numbers = None
+        initial_populations = None
         # start with an empty system
         system = c3s.ChemicalMasterEquation(config=config_dictionary,
-                                            initial_copy_numbers=initial_copy_numbers,
+                                            initial_populations=initial_populations,
                                             empty=True)
         # fill in attribute data from file
         system._constitutive_states = self._read_states()
