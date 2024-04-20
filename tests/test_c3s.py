@@ -82,6 +82,29 @@ class BaseTest:
         trajectory_continued = system.Trajectory.trajectory
         assert_array_equal(trajectory_contiguous, trajectory_continued)
 
+
+    '''@pytest.mark.parametrize('method', ('EXPM', 'IMU'))
+    def test_initial_distribution(self, correct_data, system, method):
+        system.run(method=method, N_timesteps=20, overwrite=True)
+        trajectory20 = system.Trajectory.trajectory
+
+        initial_distribution = system.trajectory[10]
+        system.run(method=method, N_timesteps=10, overwrite=True, initial_distribution=initial_distribution)
+        trajectory10 = system.Trajectory.trajectory
+
+        assert_array_equal(trajectory20[10::], trajectory10)'''
+
+    '''def test_is_continued2(self, correct_data, system):
+        N_timesteps = 10
+        system.run_simulation(N_timesteps=N_timesteps)
+        trajectory_contiguous = system.Trajectory.trajectory
+        system.run_simulation(N_timesteps=5)
+        system.append_simulation(N_timesteps=5)
+        trajectory_continued = system.Trajectory.trajectory
+        print(trajectory_contiguous.shape)
+        print(trajectory_continued.shape)
+        assert_array_equal(trajectory_contiguous, trajectory_continued)'''
+
     def test_file_io(self, system, outfile):
         timesteps = [5, 10, 15]
         dt = 1

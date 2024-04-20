@@ -2,7 +2,7 @@ import numpy as np
 import time
 
 
-class timeit:
+class time_this_code:
     """Measures the time elapsed during the execution of a block of code.
 
     :class:`timeit` is meant to be used as a context manager where you wrap a section of code with a

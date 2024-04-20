@@ -80,13 +80,13 @@ class Write:
         with CMEWriter(filename, mode, self.system) as Writer:
             Writer._write_system_info()
 
-    def trajectory(self, filename, mode='r+', trajectory_name=None):
+    def trajectory(self, filename, mode='r+', trajectory_name=None, last_only=False):
         """write trajectory data to HDF5 file"""
         if not Path(filename).is_file():
             # if the file does not exist yet
             self.system_info(filename, mode='x')
         with CMEWriter(filename, mode, self.system, trajectory_name=trajectory_name) as Writer:
-            Writer._write_trajectory()
+            Writer._write_trajectory(last_only)
 
     def mutual_information(self, filename, MI, mode='r+', trajectory_name=None):
         with CMEWriter(filename, mode, self.system, trajectory_name=trajectory_name) as Writer:
@@ -100,9 +100,9 @@ class Write:
         with CMEWriter(filename, mode, self.system, trajectory_name=trajectory_name) as Writer:
             Writer._write_conditional_entropy(Hcond)
 
-    def avg_copy_number(self, filename, species, data, mode='r+', trajectory_name=None):
+    def expected_population(self, filename, species, data, mode='r+', trajectory_name=None):
         with CMEWriter(filename, mode, self.system, trajectory_name=trajectory_name) as Writer:
-            Writer._write_avg_copy_number(species, data)
+            Writer._write_expected_population(species, data)
 
     def marginalized_trajectory(self, filename, species_subset, data, mode='r+', trajectory_name=None):
         species_subset = [species_subset] if isinstance(species_subset, str) else species_subset
@@ -184,7 +184,7 @@ class CMEWriter:
             species_group = initial_pop_group.create_group(name=species)
             species_group.attrs['count'] = count
 
-    def _write_trajectory(self):
+    def _write_trajectory(self, last_only):
         """"""
         Trajectory = self.system.Trajectory
         trajectory_name = self._trajectory_name
@@ -203,9 +203,17 @@ class CMEWriter:
             rate_group = trajectory_group.create_group(f'rates/{rate_name}', track_order=True)
             rate_group.attrs['value'] = rate_value
 
-        trajectory_dataset = trajectory_group.create_dataset(name='trajectory', data=Trajectory.trajectory)
+        if last_only:
+            data = np.asarray([Trajectory.trajectory[-1]])
+            N_timesteps = 1
+            #data = Trajectory.trajectory[-1]
+        else:
+            data = Trajectory.trajectory
+            N_timesteps = Trajectory.N_timesteps
+        trajectory_dataset = trajectory_group.create_dataset(name='trajectory', data=data)
         trajectory_dataset.attrs['dt'] = Trajectory.dt
-        trajectory_dataset.attrs['N_timesteps'] = Trajectory.N_timesteps
+        trajectory_dataset.attrs['N_timesteps'] = N_timesteps
+
         if self.system.timings:
             trajectory_dataset.attrs['code_time'] = self.system.timings[f't_run_{Trajectory.method}']
 
@@ -249,7 +257,7 @@ class CMEWriter:
         cond_entropy_dset.attrs['Y'] = str(Hcond.Y)
         cond_entropy_dset.attrs['base'] = Hcond.base
 
-    def _write_avg_copy_number(self, species, data):
+    def _write_expected_population(self, species, data):
         trajectory_name = self._trajectory_name
         calculations = self._get_calculations_group(trajectory_name)
         calculations.create_dataset(name=f'<c_{species}>', data=data)

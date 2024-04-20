@@ -89,7 +89,8 @@ class Calculate:
 
     def marginalize_trajectory(self, species_subset) -> Dict[Tuple, np.ndarray]:
         point_mappings = self._get_point_mappings(species_subset)
-        marginalized_trajectory = {state: np.asarray([P_t[ids].sum() for P_t in self.system.trajectory], dtype=np.float64)
+        trajectory = self.system.trajectory
+        marginalized_trajectory = {state: np.asarray([P_t[ids].sum() for P_t in trajectory], dtype=np.float64)
                                    for state, ids in point_mappings.items()}
         return marginalized_trajectory
 
